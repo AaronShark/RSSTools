@@ -8,7 +8,7 @@ DEFAULT_CONFIG = {
     "base_dir": "~/RSSKB",
     "opml_path": "",
     "llm": {
-        "api_key": "04571e62bed046b8809423c19690f7da.Yvz4IaUKs3Vb9QLd",
+        "api_key": "",
         "host": "https://api.z.ai/api/coding/paas/v4",
         "models": "glm-5,glm-4.7",
         "max_tokens": 2048,
