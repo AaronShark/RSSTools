@@ -1,0 +1,227 @@
+"""LLM client for summarization and scoring"""
+
+import asyncio
+import json
+from typing import Optional, Tuple, Dict, List
+
+import aiohttp
+from rich.console import Console
+
+from .cache import LLMCache
+from .content import ContentPreprocessor
+
+console = Console()
+
+
+class LLMClient:
+    """Async LLM client with multi-model fallback, retry, caching, serial execution."""
+
+    def __init__(self, cfg: dict, cache: LLMCache):
+        self.host = cfg["host"]
+        self.models = [m.strip() for m in cfg["models"].split(",")]
+        self.max_tokens = cfg["max_tokens"]
+        self.temperature = cfg["temperature"]
+        self.max_content_chars = cfg["max_content_chars"]
+        self.request_delay = cfg["request_delay"]
+        self.max_retries = cfg["max_retries"]
+        self.timeout = cfg["timeout"]
+        self.system_prompt = cfg["system_prompt"]
+        self.user_prompt_template = cfg["user_prompt"]
+        self.cache = cache
+        self.api_key = cfg.get("api_key", "")
+        self._lock = asyncio.Lock()
+        self.preprocessor = ContentPreprocessor()
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.api_key)
+
+    async def summarize(self, session: aiohttp.ClientSession,
+                        title: str, content: str) -> Tuple[Optional[str], Optional[str]]:
+        """Returns (summary, error). Serial via lock."""
+        if not self.api_key:
+            return None, "LLM api_key not set"
+        async with self._lock:
+            return await self._call_with_fallback(session, title, content)
+
+    async def _call_with_fallback(self, session, title, content):
+        cleaned = self.preprocessor.process(content)
+        truncated = cleaned[:self.max_content_chars]
+        user_msg = self.user_prompt_template.format(title=title, content=truncated)
+
+        for model in self.models:
+            # Check cache
+            cached = self.cache.get(model, self.system_prompt, user_msg)
+            if cached:
+                return cached, None
+
+            result, error = await self._call_api(session, model, user_msg)
+            if result:
+                self.cache.put(model, self.system_prompt, user_msg, result)
+                await asyncio.sleep(self.request_delay)
+                return result, None
+            # If this model failed with 400 (content filter), skip all models
+            if error and error == "Content filtered (400)":
+                return None, error
+            console.print(f"    [yellow]Model {model} failed: {error}, trying next...[/yellow]")
+
+        await asyncio.sleep(self.request_delay)
+        return None, error
+
+    async def _call_api(self, session, model, user_msg):
+        url = f"{self.host}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {self.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": user_msg},
+            ],
+            "temperature": self.temperature,
+            "max_tokens": self.max_tokens,
+        }
+        last_error = None
+        for attempt in range(self.max_retries):
+            try:
+                async with session.post(url, headers=headers, json=payload,
+                                        timeout=aiohttp.ClientTimeout(total=self.timeout)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        usage = data.get("usage", {})
+                        total_tok = usage.get("completion_tokens", 0)
+                        reasoning = usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0)
+                        console.print(f"    [dim]tokens: reasoning={reasoning}, content={total_tok - reasoning}[/dim]")
+                        result = data["choices"][0]["message"]["content"].strip()
+                        if not result:
+                            return None, f"Empty content (reasoning {reasoning}/{total_tok})"
+                        return result, None
+                    if resp.status == 400:
+                        return None, "Content filtered (400)"
+                    last_error = f"HTTP {resp.status}"
+            except (asyncio.TimeoutError, aiohttp.ClientError, ConnectionError, OSError) as e:
+                last_error = f"{type(e).__name__}: {e}"
+            except Exception as e:
+                return None, f"Unexpected: {e}"
+            wait = min(2 ** attempt * 2, 60)
+            console.print(f"    [yellow]{last_error}, retry in {wait}s ({attempt+1}/{self.max_retries})[/yellow]")
+            await asyncio.sleep(wait)
+        return None, f"Gave up after {self.max_retries} retries: {last_error}"
+
+    async def score_and_classify(self, session: aiohttp.ClientSession,
+                                   title: str, content: str) -> Tuple[Optional[Dict], Optional[str]]:
+        """Score and classify article. Returns (result_dict, error)."""
+        if not self.api_key:
+            return None, "LLM api_key not set"
+
+        cleaned = self.preprocessor.process(content)
+        truncated = cleaned[:self.max_content_chars]
+        prompt = (
+            f"Rate this article on 3 dimensions (1-10 scale):\n"
+            f"- relevance: Value to tech professionals\n"
+            f"- quality: Depth and writing quality\n"
+            f"- timeliness: Current relevance\n\n"
+            f"Classify into exactly one of these categories:\n"
+            f"ai-ml (AI/ML), security, engineering, tools, opinion, other\n\n"
+            f"Extract 2-4 keywords (single words or short phrases).\n\n"
+            f"Article title: {title}\n\n"
+            f"Article content:\n{truncated}\n\n"
+            f"Return ONLY valid JSON (no markdown formatting):\n"
+            f'{{"relevance": <1-10>, "quality": <1-10>, "timeliness": <1-10>, '
+            f'"category": "<category>", "keywords": ["keyword1", "keyword2"]}}'
+        )
+
+        user_msg = prompt
+        for model in self.models:
+            cached = self.cache.get(model, self.system_prompt, user_msg)
+            if cached:
+                try:
+                    return json.loads(cached), None
+                except json.JSONDecodeError:
+                    pass
+
+            result, error = await self._call_api(session, model, user_msg)
+            if result:
+                try:
+                    data = json.loads(result)
+                    self.cache.put(model, self.system_prompt, user_msg, result)
+                    await asyncio.sleep(self.request_delay)
+                    return data, None
+                except json.JSONDecodeError as e:
+                    return None, f"Invalid JSON response: {e}"
+
+            if error and error == "Content filtered (400)":
+                return None, error
+            console.print(f"    [yellow]Model {model} failed: {error}, trying next...[/yellow]")
+
+        await asyncio.sleep(self.request_delay)
+        return None, error
+
+    async def summarize_batch(self, session: aiohttp.ClientSession,
+                               articles: List[Dict]) -> List[Dict]:
+        """Summarize multiple articles in one API call.
+        Args:
+            articles: List of {'title': str, 'content': str}
+        Returns:
+            List of {'summary': str, 'error': Optional[str]}
+        """
+        if not articles:
+            return []
+        if not self.api_key:
+            return [{'summary': None, 'error': 'LLM api_key not set'}] * len(articles)
+
+        batch_size = 10
+        all_results = []
+
+        for i in range(0, len(articles), batch_size):
+            batch = articles[i:i + batch_size]
+            articles_text = "\n\n---\n\n".join([
+                f"Index {idx}: {a['title']}\n\n{self.preprocessor.process(a['content'][:2000])}"
+                for idx, a in enumerate(batch)
+            ])
+
+            prompt = (
+                f"Summarize each article in 2-3 sentences, in the same language as the article.\n"
+                f"Return ONLY valid JSON (no markdown formatting):\n"
+                f'{{"results": [{{"index": 0, "summary": "..."}}, {{"index": 1, "summary": "..."}}]}}\n\n'
+                f"Articles:\n{articles_text}"
+            )
+
+            batch_results = await self._process_batch(session, prompt, len(batch))
+            all_results.extend(batch_results)
+
+            await asyncio.sleep(self.request_delay)
+
+        return all_results
+
+    async def _process_batch(self, session: aiohttp.ClientSession,
+                               prompt: str, batch_size: int) -> List[Dict]:
+        """Process batch with fallback to individual calls."""
+        for model in self.models:
+            cached = self.cache.get(model, self.system_prompt, prompt)
+            if cached:
+                try:
+                    data = json.loads(cached)
+                    return data.get('results', [])
+                except json.JSONDecodeError:
+                    pass
+
+            result, error = await self._call_api(session, model, prompt)
+            if result:
+                try:
+                    data = json.loads(result)
+                    self.cache.put(model, self.system_prompt, prompt, result)
+                    results = data.get('results', [])
+                    if len(results) == batch_size:
+                        return [{'summary': r.get('summary'), 'error': None} for r in results]
+                except json.JSONDecodeError:
+                    console.print("    [yellow]Batch JSON parse failed, trying next model[/yellow]")
+
+            if error and error == "Content filtered (400)":
+                break
+            console.print(f"    [yellow]Batch failed with {model}: {error}, trying fallback[/yellow]")
+
+        await asyncio.sleep(self.request_delay)
+        return [{'summary': None, 'error': 'Batch processing failed'}] * batch_size

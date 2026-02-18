@@ -3,5 +3,6 @@ aiofiles>=23.0
 feedparser>=6.0
 beautifulsoup4>=4.12
 rich>=13.0
+textual>=0.40.0
 python-dateutil>=2.8
 trafilatura>=1.8

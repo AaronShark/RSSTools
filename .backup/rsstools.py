@@ -27,7 +27,7 @@ import traceback
 import warnings
 import xml.etree.ElementTree as ET
 from html import escape as html_escape
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 from pathlib import Path
@@ -58,9 +58,9 @@ DEFAULT_CONFIG = {
     "base_dir": "~/RSSKB",
     "opml_path": "",  # default: {base_dir}/subscriptions.opml
     "llm": {
-        "api_key": "",  # or set via GLM_API_KEY env var
+        "api_key": "04571e62bed046b8809423c19690f7da.Yvz4IaUKs3Vb9QLd",  # or set via GLM_API_KEY env var
         "host": "https://api.z.ai/api/coding/paas/v4",
-        "models": "glm-4.7",  # comma-separated for fallback
+        "models": "glm-5,glm-4.7",  # comma-separated for fallback
         "max_tokens": 2048,
         "temperature": 0.3,
         "max_content_chars": 10000,
@@ -317,6 +317,122 @@ class LLMClient:
             await asyncio.sleep(wait)
         return None, f"Gave up after {self.max_retries} retries: {last_error}"
 
+    async def score_and_classify(self, session: aiohttp.ClientSession,
+                                   title: str, content: str) -> Tuple[Optional[Dict], Optional[str]]:
+        """Score and classify article. Returns (result_dict, error)."""
+        if not self.api_key:
+            return None, "LLM api_key not set"
+
+        cleaned = self.preprocessor.process(content)
+        truncated = cleaned[:self.max_content_chars]
+        prompt = (
+            f"Rate this article on 3 dimensions (1-10 scale):\n"
+            f"- relevance: Value to tech professionals\n"
+            f"- quality: Depth and writing quality\n"
+            f"- timeliness: Current relevance\n\n"
+            f"Classify into exactly one of these categories:\n"
+            f"ai-ml (AI/ML), security, engineering, tools, opinion, other\n\n"
+            f"Extract 2-4 keywords (single words or short phrases).\n\n"
+            f"Article title: {title}\n\n"
+            f"Article content:\n{truncated}\n\n"
+            f"Return ONLY valid JSON (no markdown formatting):\n"
+            f'{{"relevance": <1-10>, "quality": <1-10>, "timeliness": <1-10>, '
+            f'"category": "<category>", "keywords": ["keyword1", "keyword2"]}}'
+        )
+
+        user_msg = prompt
+        for model in self.models:
+            cached = self.cache.get(model, self.system_prompt, user_msg)
+            if cached:
+                try:
+                    return json.loads(cached), None
+                except json.JSONDecodeError:
+                    pass
+
+            result, error = await self._call_api(session, model, user_msg)
+            if result:
+                try:
+                    data = json.loads(result)
+                    self.cache.put(model, self.system_prompt, user_msg, result)
+                    await asyncio.sleep(self.request_delay)
+                    return data, None
+                except json.JSONDecodeError as e:
+                    return None, f"Invalid JSON response: {e}"
+
+            if error and error == "Content filtered (400)":
+                return None, error
+            console.print(f"    [yellow]Model {model} failed: {error}, trying next...[/yellow]")
+
+        await asyncio.sleep(self.request_delay)
+        return None, error
+
+    async def summarize_batch(self, session: aiohttp.ClientSession,
+                               articles: List[Dict]) -> List[Dict]:
+        """Summarize multiple articles in one API call.
+        Args:
+            articles: List of {'title': str, 'content': str}
+        Returns:
+            List of {'summary': str, 'error': Optional[str]}
+        """
+        if not articles:
+            return []
+        if not self.api_key:
+            return [{'summary': None, 'error': 'LLM api_key not set'}] * len(articles)
+
+        batch_size = 10
+        all_results = []
+
+        for i in range(0, len(articles), batch_size):
+            batch = articles[i:i + batch_size]
+            articles_text = "\n\n---\n\n".join([
+                f"Index {idx}: {a['title']}\n\n{self.preprocessor.process(a['content'][:2000])}"
+                for idx, a in enumerate(batch)
+            ])
+
+            prompt = (
+                f"Summarize each article in 2-3 sentences, in the same language as the article.\n"
+                f"Return ONLY valid JSON (no markdown formatting):\n"
+                f'{{"results": [{{"index": 0, "summary": "..."}}, {{"index": 1, "summary": "..."}}]}}\n\n'
+                f"Articles:\n{articles_text}"
+            )
+
+            batch_results = await self._process_batch(session, prompt, len(batch))
+            all_results.extend(batch_results)
+
+            await asyncio.sleep(self.request_delay)
+
+        return all_results
+
+    async def _process_batch(self, session: aiohttp.ClientSession,
+                               prompt: str, batch_size: int) -> List[Dict]:
+        """Process batch with fallback to individual calls."""
+        for model in self.models:
+            cached = self.cache.get(model, self.system_prompt, prompt)
+            if cached:
+                try:
+                    data = json.loads(cached)
+                    return data.get('results', [])
+                except json.JSONDecodeError:
+                    pass
+
+            result, error = await self._call_api(session, model, prompt)
+            if result:
+                try:
+                    data = json.loads(result)
+                    self.cache.put(model, self.system_prompt, prompt, result)
+                    results = data.get('results', [])
+                    if len(results) == batch_size:
+                        return [{'summary': r.get('summary'), 'error': None} for r in results]
+                except json.JSONDecodeError:
+                    console.print("    [yellow]Batch JSON parse failed, trying next model[/yellow]")
+
+            if error and error == "Content filtered (400)":
+                break
+            console.print(f"    [yellow]Batch failed with {model}: {error}, trying fallback[/yellow]")
+
+        await asyncio.sleep(self.request_delay)
+        return [{'summary': None, 'error': 'Batch processing failed'}] * batch_size
+
 
 # ==================== Index Manager ====================
 
@@ -356,6 +472,12 @@ class IndexManager:
     def add_article(self, url: str, meta: Dict):
         self.data['articles'][url] = meta
         self._dirty = True
+
+    def update_article_scores(self, url: str, scores: Dict):
+        """Update article with scoring and classification data."""
+        if url in self.data['articles']:
+            self.data['articles'][url].update(scores)
+            self._dirty = True
 
     def is_feed_failed(self, url: str) -> bool:
         return url in self.data['feed_failures']
@@ -837,15 +959,17 @@ async def cmd_summarize(cfg: dict, force: bool = False):
 
     articles = index.data.get('articles', {})
     if force:
-        to_summarize = {
-            url: meta for url, meta in articles.items()
+        to_summarize = [
+            {'url': url, **meta}
+            for url, meta in articles.items()
             if 'filepath' in meta
-        }
+        ]
     else:
-        to_summarize = {
-            url: meta for url, meta in articles.items()
+        to_summarize = [
+            {'url': url, **meta}
+            for url, meta in articles.items()
             if 'summary' not in meta and 'filepath' in meta
-        }
+        ]
     total = len(articles)
     pending = len(to_summarize)
     console.print(f"Total: {total}, already done: {total - pending}, to summarize: {pending}")
@@ -854,11 +978,7 @@ async def cmd_summarize(cfg: dict, force: bool = False):
         console.print("[green]All articles already have summaries.[/green]")
         return
 
-    queue: asyncio.Queue = asyncio.Queue()
-    for url, meta in to_summarize.items():
-        queue.put_nowait((url, meta))
-
-    counters = {'ok': 0, 'fail': 0}
+    counters = {'summarized': 0, 'scored': 0, 'failed': 0}
     save_every = cfg["summarize"]["save_every"]
 
     async with aiohttp.ClientSession() as session:
@@ -872,63 +992,103 @@ async def cmd_summarize(cfg: dict, force: bool = False):
             task_id = progress.add_task(
                 f"Done: 0, Remaining: {pending}, Failed: 0", total=pending)
 
-            while not queue.empty():
-                try:
-                    url, meta = queue.get_nowait()
-                except asyncio.QueueEmpty:
-                    break
+            for i in range(0, len(to_summarize), 10):
+                batch = to_summarize[i:i + 10]
 
-                filepath = os.path.join(base_dir, meta['filepath'])
-                if not os.path.exists(filepath):
-                    counters['fail'] += 1
-                    progress.advance(task_id)
-                    continue
-
-                async with aiofiles.open(filepath, 'r', encoding='utf-8') as f:
-                    text = await f.read()
-
-                fm, body = extract_front_matter(text)
-                if fm is None:
-                    progress.advance(task_id)
-                    continue
-                if not force and 'summary' in fm:
-                    progress.advance(task_id)
-                    continue
-
-                title = meta.get('title', '')
-                summary, error = await llm.summarize(session, title, body.strip())
-
-                if summary:
-                    fm['summary'] = summary
-                    new_text = rebuild_front_matter(fm, body)
-                    try:
-                        async with aiofiles.open(filepath, 'w', encoding='utf-8') as f:
-                            await f.write(new_text)
-                    except IOError as e:
-                        counters['fail'] += 1
-                        progress.console.print(f"    [red]Write error: {e}[/red]")
-                        progress.advance(task_id)
+                batch_articles = []
+                for article in batch:
+                    filepath = os.path.join(base_dir, article['filepath'])
+                    if not os.path.exists(filepath):
                         continue
-                    index.data['articles'][url]['summary'] = summary
-                    index._dirty = True
-                    counters['ok'] += 1
-                    progress.console.print(f"    [green]OK[/green] {meta.get('filepath', '?')}")
-                    if counters['ok'] % save_every == 0:
-                        index.flush()
-                else:
-                    counters['fail'] += 1
-                    if error:
-                        progress.console.print(f"    [red]FAIL[/red] {title}: {error}")
-                    index.record_summary_failure(url, title, meta.get('filepath', ''), error or 'Unknown')
+                    try:
+                        async with aiofiles.open(filepath, 'r', encoding='utf-8') as f:
+                            text = await f.read()
+                        fm, body = extract_front_matter(text)
+                        if fm is not None:
+                            batch_articles.append({
+                                'filepath': filepath,
+                                'url': article['url'],
+                                'title': article.get('title', ''),
+                                'body': body.strip(),
+                                'fm': fm
+                            })
+                    except IOError:
+                        pass
 
-                progress.advance(task_id)
-                done = counters['ok']
-                remaining = pending - done - counters['fail']
-                progress.update(task_id,
-                    description=f"Done: {done}, Remaining: {remaining}, Failed: {counters['fail']}")
+                if not batch_articles:
+                    continue
+
+                batch_summaries = await llm.summarize_batch(
+                    session,
+                    [{'title': a['title'], 'content': a['body']} for a in batch_articles]
+                )
+
+                for article, result in zip(batch_articles, batch_summaries):
+                    url = article['url']
+                    summary = result.get('summary')
+                    error = result.get('error')
+
+                    if summary:
+                        article['fm']['summary'] = summary
+                        new_text = rebuild_front_matter(article['fm'], article['body'])
+                        try:
+                            async with aiofiles.open(article['filepath'], 'w', encoding='utf-8') as f:
+                                await f.write(new_text)
+                        except IOError as e:
+                            counters['failed'] += 1
+                            progress.console.print(f"    [red]Write error: {e}[/red]")
+                            progress.advance(task_id)
+                            continue
+
+                        index.data['articles'][url]['summary'] = summary
+                        index._dirty = True
+                        counters['summarized'] += 1
+
+                        scores, score_error = await llm.score_and_classify(
+                            session, article['title'], article['body']
+                        )
+                        if scores:
+                            index.update_article_scores(url, {
+                                'score_relevance': scores.get('relevance'),
+                                'score_quality': scores.get('quality'),
+                                'score_timeliness': scores.get('timeliness'),
+                                'category': scores.get('category'),
+                                'keywords': scores.get('keywords', [])
+                            })
+                            counters['scored'] += 1
+                            progress.console.print(
+                                f"    [green]OK[/green] {article['title'][:40]}... "
+                                f"[dim]({scores.get('category')}, "
+                                f"{scores.get('relevance', 0)}/{scores.get('quality', 0)}/{scores.get('timeliness', 0)})[/dim]"
+                            )
+                        else:
+                            progress.console.print(
+                                f"    [yellow]OK (no scores)[/yellow] {article['title'][:40]}..."
+                            )
+
+                        if counters['summarized'] % save_every == 0:
+                            index.flush()
+                    else:
+                        counters['failed'] += 1
+                        if error:
+                            progress.console.print(
+                                f"    [red]FAIL[/red] {article['title'][:40]}: {error}"
+                            )
+                        index.record_summary_failure(
+                            url, article['title'], article['filepath'], error or 'Unknown'
+                        )
+
+                    progress.advance(task_id)
+                    done = counters['summarized']
+                    remaining = pending - done - counters['failed']
+                    progress.update(task_id,
+                        description=f"Done: {done}, Remaining: {remaining}, Failed: {counters['failed']}")
 
     index.flush()
-    console.print(f"\n[green]Done![/green] Summarized: {counters['ok']}, Failed: {counters['fail']}")
+    console.print(
+        f"\n[green]Done![/green] Summarized: {counters['summarized']}, "
+        f"Scored: {counters['scored']}, Failed: {counters['failed']}"
+    )
 
 
 def cmd_failed(cfg: dict):
@@ -1071,6 +1231,186 @@ def cmd_clean_cache(cfg: dict, max_age_days: int = 30, dry_run: bool = False):
         console.print("[green]No cache files to clean[/green]")
 
 
+def _generate_mermaid_pie_chart(category_counts: Dict[str, int]) -> str:
+    """Generate Mermaid pie chart for category distribution."""
+    total = sum(category_counts.values())
+    lines = ['```mermaid', 'pie showData', '  title Category Distribution']
+    for cat, count in sorted(category_counts.items(), key=lambda x: -x[1]):
+        percentage = (count / total) * 100
+        lines.append(f'  "{cat}": {percentage:.1f}')
+    lines.extend(['```', ''])
+    return '\n'.join(lines)
+
+
+def _generate_mermaid_bar_chart(keyword_counts: Dict[str, int], top_n: int = 10) -> str:
+    """Generate Mermaid horizontal bar chart for keyword frequency."""
+    top_keywords = sorted(keyword_counts.items(), key=lambda x: -x[1])[:top_n]
+    if not top_keywords:
+        return ''
+    max_count = max(keyword_counts.values())
+    lines = ['```mermaid', 'xychart-beta', '  horizontal', '  title "Top Keywords"']
+    labels = [f'"{kw}"' for kw, _ in top_keywords]
+    values = [str(count) for _, count in top_keywords]
+    lines.append('  x-axis [' + ', '.join(labels) + ']')
+    lines.append('  y-axis "Frequency" 0 --> ' + str(max_count))
+    lines.append('  bar [' + ', '.join(values) + ']')
+    lines.extend(['```', ''])
+    return '\n'.join(lines)
+
+
+async def cmd_digest(cfg: dict, hours: int = 48, top_n: int = 15,
+                     lang: str = 'zh', output: Optional[str] = None, min_score: int = 5):
+    """Generate daily digest report."""
+    base_dir = cfg["base_dir"]
+    index = IndexManager(base_dir)
+    cache = LLMCache(os.path.join(base_dir, ".llm_cache"))
+    llm = LLMClient(cfg["llm"], cache)
+
+    console.print(f"[bold blue]Generating digest: last {hours} hours, top {top_n} articles[/bold blue]")
+
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+
+    recent_articles = []
+    for url, meta in index.data.get('articles', {}).items():
+        published = _parse_date_flexible(meta.get('published', ''))
+        if published:
+            pub = published if published.tzinfo else published.replace(tzinfo=timezone.utc)
+            if pub >= cutoff:
+                relevance = meta.get('score_relevance', 0)
+                if relevance >= min_score:
+                    recent_articles.append({
+                        'url': url,
+                        'title': meta.get('title', ''),
+                        'summary': meta.get('summary', ''),
+                        'source': meta.get('source_name', ''),
+                        'published': meta.get('published', ''),
+                        'score_relevance': meta.get('score_relevance', 0),
+                        'score_quality': meta.get('score_quality', 0),
+                        'score_timeliness': meta.get('score_timeliness', 0),
+                        'category': meta.get('category', 'other'),
+                        'keywords': meta.get('keywords', []),
+                        'total_score': relevance + meta.get('score_quality', 0) + meta.get('score_timeliness', 0)
+                    })
+
+    if not recent_articles:
+        console.print("[yellow]No articles found in the specified time window.[/yellow]")
+        return
+
+    recent_articles.sort(key=lambda x: x['total_score'], reverse=True)
+    top_articles = recent_articles[:top_n]
+
+    category_counts = {}
+    keyword_counts = {}
+    for article in recent_articles:
+        cat = article['category']
+        category_counts[cat] = category_counts.get(cat, 0) + 1
+        for kw in article['keywords']:
+            keyword_counts[kw] = keyword_counts.get(kw, 0) + 1
+
+    trends = ""
+    if llm.enabled and len(top_articles) >= 5:
+        console.print("  Generating trend analysis...")
+        articles_text = "\n\n".join([
+            f"- {a['title']} (category: {a['category']}, score: {a['total_score']})"
+            for a in top_articles[:10]
+        ])
+        prompt = (
+            f"From these top technical articles, identify 2-3 major trends.\n\n"
+            f"Articles:\n{articles_text}\n\n"
+            f"Return 3-5 bullet points, each 1-2 sentences."
+        )
+        result, _ = await llm._call_with_fallback(
+            await aiohttp.ClientSession().__aenter__(), "", prompt
+        )
+        if result:
+            trends = result
+
+    date_str = datetime.now(timezone.utc).strftime('%Y-%m-%d')
+    if not output:
+        output = os.path.join(base_dir, f"digest-{date_str}.md")
+
+    report_lines = [
+        f"# Tech Digest - {date_str}",
+        "",
+        f"## 📝 Today's Highlights",
+        "",
+    ]
+
+    if trends:
+        report_lines.extend([trends.strip(), ""])
+
+    report_lines.extend([
+        f"## 🏆 Today's Top {len(top_articles)} Articles",
+        "",
+    ])
+
+    for i, article in enumerate(top_articles, 1):
+        score_badge = f"⭐ {article['total_score']}/30"
+        cat_emoji = {
+            'ai-ml': '🤖', 'security': '🔒', 'engineering': '⚙️',
+            'tools': '🛠', 'opinion': '💡', 'other': '📝'
+        }.get(article['category'], '📄')
+
+        report_lines.extend([
+            f"### {i}. {cat_emoji} {article['title']}",
+            "",
+            f"**Score**: {article['score_relevance']}/10 relevance, "
+            f"{article['score_quality']}/10 quality, "
+            f"{article['score_timeliness']}/10 timeliness {score_badge}",
+            "",
+            f"**Category**: {article['category']} | **Source**: {article['source']}",
+            "",
+        ])
+
+        if article['keywords']:
+            kw_str = ', '.join(article['keywords'])
+            report_lines.append(f"**Keywords**: {kw_str}")
+            report_lines.append("")
+
+        if article['summary']:
+            report_lines.extend([article['summary'], ""])
+
+        report_lines.append(f"🔗 [Read full article]({article['url']})")
+        report_lines.append("")
+
+    report_lines.extend([
+        "## 📊 Statistics",
+        "",
+        f"- **Total articles analyzed**: {len(recent_articles)}",
+        f"- **Time window**: Last {hours} hours",
+        f"- **Categories covered**: {len(category_counts)}",
+        "",
+        _generate_mermaid_pie_chart(category_counts),
+    ])
+
+    keyword_chart = _generate_mermaid_bar_chart(keyword_counts, top_n=10)
+    if keyword_chart:
+        report_lines.extend([
+            "## 🔑 Top Keywords",
+            "",
+            keyword_chart,
+        ])
+
+    report_lines.extend([
+        "---",
+        "",
+        f"*Generated by RSSKB on {datetime.now(timezone.utc).strftime('%Y-%m-%d %H:%M:%S UTC')}*",
+        ""
+    ])
+
+    with open(output, 'w', encoding='utf-8') as f:
+        f.write('\n'.join(report_lines))
+
+    console.print(Panel(
+        f"[green]Digest generated successfully![/green]\n\n"
+        f"  Articles: {len(top_articles)} (top {top_n} from {len(recent_articles)})\n"
+        f"  Output: {output}\n"
+        f"  Time window: Last {hours} hours",
+        title="Digest Complete",
+        border_style="green",
+    ))
+
+
 # ==================== Search / Filter ====================
 
 def _parse_date_flexible(s: str) -> Optional[datetime]:
@@ -1150,6 +1490,19 @@ def cmd_search(cfg: dict, args):
             if args.topic.lower() not in haystack:
                 continue
 
+        # Category filter
+        if args.category:
+            if meta.get('category') != args.category:
+                continue
+
+        # Minimum score filter
+        if args.min_score:
+            total = (meta.get('score_relevance', 0) +
+                    meta.get('score_quality', 0) +
+                    meta.get('score_timeliness', 0))
+            if total < args.min_score:
+                continue
+
         # Published date range
         if date_from or date_to:
             pub = _parse_date_flexible(meta.get('published', ''))
@@ -1200,9 +1553,12 @@ def cmd_search(cfg: dict, args):
                 except Exception:
                     continue
 
-                # Keyword filter (full-text)
+                # Keyword filter (full-text + metadata keywords)
                 if args.keyword:
-                    if args.keyword.lower() not in file_content.lower():
+                    kw_lower = args.keyword.lower()
+                    meta_keywords = [k.lower() for k in meta.get('keywords', [])]
+                    found_in_meta = any(kw_lower in k for k in meta_keywords)
+                    if not found_in_meta and kw_lower not in file_content.lower():
                         continue
 
                 # Language filter
@@ -1252,6 +1608,8 @@ def cmd_search(cfg: dict, args):
                   expand=True, show_lines=True)
     table.add_column("#", style="dim", width=4, no_wrap=True)
     table.add_column("Published", width=10, no_wrap=True)
+    table.add_column("Cat", max_width=10, no_wrap=True)
+    table.add_column("Score", max_width=8, no_wrap=True)
     table.add_column("Source", max_width=18)
     table.add_column("Title", ratio=2)
     table.add_column("Summary", ratio=3)
@@ -1260,6 +1618,11 @@ def cmd_search(cfg: dict, args):
         pub_raw = r.get('published', '')
         pub_dt = _parse_date_flexible(pub_raw)
         pub = pub_dt.strftime('%Y-%m-%d') if pub_dt else pub_raw[:10]
+        cat = r.get('category', '')[:6]
+        total_score = (r.get('score_relevance', 0) +
+                      r.get('score_quality', 0) +
+                      r.get('score_timeliness', 0))
+        score = str(total_score) if total_score > 0 else '—'
         src = r.get('source_name', '')
         if len(src) > 18:
             src = src[:15] + '...'
@@ -1269,7 +1632,7 @@ def cmd_search(cfg: dict, args):
         summary = r.get('summary', '')
         if len(summary) > 80:
             summary = summary[:77] + '...'
-        table.add_row(str(i), pub, src, title, summary or '[dim]—[/dim]')
+        table.add_row(str(i), pub, cat, score, src, title, summary or '[dim]—[/dim]')
 
     console.print(table)
 
@@ -1284,9 +1647,13 @@ def main():
         epilog="""examples:
   rsstools download                          Download articles from all RSS feeds
   rsstools download --force                  Re-download all articles
-  rsstools summarize                         Generate AI summaries for unsummarized articles
-  rsstools summarize --force                 Re-generate all summaries
+  rsstools summarize                         Generate AI summaries with batch processing + scoring
+  rsstools summarize --force                 Re-generate all summaries with scoring
+  rsstools digest                            Generate daily digest (last 48h, top 15)
+  rsstools digest --hours 72 --top-n 20      Custom digest parameters
+  rsstools digest --min-score 7             Only high-quality articles
   rsstools search -t "Rust"                  Search articles by title
+  rsstools search --category ai-ml          Filter by category
   rsstools search -s "Paul Graham" --limit 10
   rsstools search --from 2025-06-01 --to 2025-12-31
   rsstools search -k "WebAssembly" --lang en Full-text search, English only
@@ -1372,11 +1739,29 @@ config file:
     sp.add_argument('--min-size', type=int, help='Minimum file size in bytes')
     sp.add_argument('--max-size', type=int, help='Maximum file size in bytes')
     sp.add_argument('--lang', choices=['zh', 'en', 'ja', 'ko'], help='Filter by detected language')
+    sp.add_argument('--category', choices=['ai-ml', 'security', 'engineering', 'tools', 'opinion', 'other'],
+                    help='Filter by article category')
+    sp.add_argument('--keyword', help='Full-text search in article content or keywords')
+    sp.add_argument('--min-score', type=int, help='Minimum total score (1-30)')
     sp.add_argument('--limit', type=int, default=50, help='Max results (default: 50)')
     sp.add_argument('--sort', choices=['published', 'downloaded', 'title', 'size'],
                     default='published', help='Sort field (default: published)')
     sp.add_argument('--reverse', action='store_true', help='Reverse sort (oldest first)')
     sp.add_argument('--json', action='store_true', help='Output as JSON')
+
+    sp_digest = sub.add_parser('digest',
+        help='Generate daily digest report',
+        description='Generate a curated daily digest from recent articles with AI scoring, '
+                    'summaries, and trend analysis. Outputs a Markdown report with visualizations.')
+    sp_digest.add_argument('--hours', type=int, default=48,
+                           help='Time window in hours (default: 48)')
+    sp_digest.add_argument('--top-n', type=int, default=15,
+                           help='Number of top articles (default: 15)')
+    sp_digest.add_argument('--lang', choices=['zh', 'en'], default='zh',
+                           help='Summary language (default: zh)')
+    sp_digest.add_argument('--output', help='Output file path (default: digest-YYYYMMDD.md)')
+    sp_digest.add_argument('--min-score', type=int, default=5,
+                           help='Minimum relevance score (1-10, default: 5)')
 
     args = parser.parse_args()
     if not args.command:
@@ -1400,6 +1785,9 @@ config file:
         cmd_clean_cache(cfg, max_age_days=args.max_age, dry_run=args.dry_run)
     elif args.command == 'search':
         cmd_search(cfg, args)
+    elif args.command == 'digest':
+        asyncio.run(cmd_digest(cfg, hours=args.hours, top_n=args.top_n,
+                              lang=args.lang, output=args.output, min_score=args.min_score))
 
 
 if __name__ == '__main__':
