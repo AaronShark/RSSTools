@@ -79,10 +79,10 @@ class TestContentPreprocessor:
         assert result == text
 
     def test_process_handles_unicode(self):
-        text = "Unicode: \u4e2d\u6587 \U0001F600 emoji"
+        text = "Unicode: \u4e2d\u6587 \U0001f600 emoji"
         result = ContentPreprocessor.process(text)
         assert "\u4e2d\u6587" in result
-        assert "\U0001F600" in result
+        assert "\U0001f600" in result
 
     def test_process_nested_markdown(self):
         text = "![outer ![inner](url)](outer-url)"

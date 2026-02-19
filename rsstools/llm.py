@@ -2,7 +2,6 @@
 
 import asyncio
 import json
-from typing import Optional, Tuple, Dict, List
 
 import aiohttp
 
@@ -36,8 +35,9 @@ class LLMClient:
     def enabled(self) -> bool:
         return bool(self.api_key)
 
-    async def summarize(self, session: aiohttp.ClientSession,
-                        title: str, content: str) -> Tuple[Optional[str], Optional[str]]:
+    async def summarize(
+        self, session: aiohttp.ClientSession, title: str, content: str
+    ) -> tuple[str | None, str | None]:
         """Returns (summary, error). Serial via lock."""
         if not self.api_key:
             return None, "LLM api_key not set"
@@ -46,7 +46,7 @@ class LLMClient:
 
     async def _call_with_fallback(self, session, title, content):
         cleaned = self.preprocessor.process(content)
-        truncated = cleaned[:self.max_content_chars]
+        truncated = cleaned[: self.max_content_chars]
         user_msg = self.user_prompt_template.format(title=title, content=truncated)
 
         for model in self.models:
@@ -86,14 +86,24 @@ class LLMClient:
         last_error = None
         for attempt in range(self.max_retries):
             try:
-                async with session.post(url, headers=headers, json=payload,
-                                        timeout=aiohttp.ClientTimeout(total=self.timeout)) as resp:
+                async with session.post(
+                    url,
+                    headers=headers,
+                    json=payload,
+                    timeout=aiohttp.ClientTimeout(total=self.timeout),
+                ) as resp:
                     if resp.status == 200:
                         data = await resp.json()
                         usage = data.get("usage", {})
                         total_tok = usage.get("completion_tokens", 0)
-                        reasoning = usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0)
-                        logger.debug("tokens_used", reasoning_tokens=reasoning, content_tokens=total_tok - reasoning)
+                        reasoning = usage.get("completion_tokens_details", {}).get(
+                            "reasoning_tokens", 0
+                        )
+                        logger.debug(
+                            "tokens_used",
+                            reasoning_tokens=reasoning,
+                            content_tokens=total_tok - reasoning,
+                        )
                         result = data["choices"][0]["message"]["content"].strip()
                         if not result:
                             return None, f"Empty content (reasoning {reasoning}/{total_tok})"
@@ -101,23 +111,30 @@ class LLMClient:
                     if resp.status == 400:
                         return None, "Content filtered (400)"
                     last_error = f"HTTP {resp.status}"
-            except (asyncio.TimeoutError, aiohttp.ClientError, ConnectionError, OSError) as e:
+            except (TimeoutError, aiohttp.ClientError, ConnectionError, OSError) as e:
                 last_error = f"{type(e).__name__}: {e}"
             except Exception as e:
                 return None, f"Unexpected: {e}"
-            wait = min(2 ** attempt * 2, 60)
-            logger.warning("api_retry", error=last_error, wait_seconds=wait, attempt=attempt + 1, max_retries=self.max_retries)
+            wait = min(2**attempt * 2, 60)
+            logger.warning(
+                "api_retry",
+                error=last_error,
+                wait_seconds=wait,
+                attempt=attempt + 1,
+                max_retries=self.max_retries,
+            )
             await asyncio.sleep(wait)
         return None, f"Gave up after {self.max_retries} retries: {last_error}"
 
-    async def score_and_classify(self, session: aiohttp.ClientSession,
-                                   title: str, content: str) -> Tuple[Optional[Dict], Optional[str]]:
+    async def score_and_classify(
+        self, session: aiohttp.ClientSession, title: str, content: str
+    ) -> tuple[dict | None, str | None]:
         """Score and classify article. Returns (result_dict, error)."""
         if not self.api_key:
             return None, "LLM api_key not set"
 
         cleaned = self.preprocessor.process(content)
-        truncated = cleaned[:self.max_content_chars]
+        truncated = cleaned[: self.max_content_chars]
         prompt = (
             f"Rate this article on 3 dimensions (1-10 scale):\n"
             f"- relevance: Value to tech professionals\n"
@@ -159,8 +176,9 @@ class LLMClient:
         await asyncio.sleep(self.request_delay)
         return None, error
 
-    async def summarize_batch(self, session: aiohttp.ClientSession,
-                               articles: List[Dict]) -> List[Dict]:
+    async def summarize_batch(
+        self, session: aiohttp.ClientSession, articles: list[dict]
+    ) -> list[dict]:
         """Summarize multiple articles in one API call.
         Args:
             articles: List of {'title': str, 'content': str}
@@ -170,17 +188,19 @@ class LLMClient:
         if not articles:
             return []
         if not self.api_key:
-            return [{'summary': None, 'error': 'LLM api_key not set'}] * len(articles)
+            return [{"summary": None, "error": "LLM api_key not set"}] * len(articles)
 
         batch_size = 10
         all_results = []
 
         for i in range(0, len(articles), batch_size):
-            batch = articles[i:i + batch_size]
-            articles_text = "\n\n---\n\n".join([
-                f"Index {idx}: {a['title']}\n\n{self.preprocessor.process(a['content'][:2000])}"
-                for idx, a in enumerate(batch)
-            ])
+            batch = articles[i : i + batch_size]
+            articles_text = "\n\n---\n\n".join(
+                [
+                    f"Index {idx}: {a['title']}\n\n{self.preprocessor.process(a['content'][:2000])}"
+                    for idx, a in enumerate(batch)
+                ]
+            )
 
             prompt = (
                 f"Summarize each article in 2-3 sentences, in the same language as the article.\n"
@@ -196,15 +216,16 @@ class LLMClient:
 
         return all_results
 
-    async def _process_batch(self, session: aiohttp.ClientSession,
-                               prompt: str, batch_size: int) -> List[Dict]:
+    async def _process_batch(
+        self, session: aiohttp.ClientSession, prompt: str, batch_size: int
+    ) -> list[dict]:
         """Process batch with fallback to individual calls."""
         for model in self.models:
             cached = self.cache.get(model, self.system_prompt, prompt)
             if cached:
                 try:
                     data = json.loads(cached)
-                    return data.get('results', [])
+                    return data.get("results", [])
                 except json.JSONDecodeError:
                     pass
 
@@ -213,9 +234,9 @@ class LLMClient:
                 try:
                     data = json.loads(result)
                     self.cache.put(model, self.system_prompt, prompt, result)
-                    results = data.get('results', [])
+                    results = data.get("results", [])
                     if len(results) == batch_size:
-                        return [{'summary': r.get('summary'), 'error': None} for r in results]
+                        return [{"summary": r.get("summary"), "error": None} for r in results]
                 except json.JSONDecodeError:
                     logger.warning("batch_json_parse_failed", action="trying_next_model")
 
@@ -224,4 +245,4 @@ class LLMClient:
             logger.warning("batch_failed", model=model, error=error, action="trying_fallback")
 
         await asyncio.sleep(self.request_delay)
-        return [{'summary': None, 'error': 'Batch processing failed'}] * batch_size
+        return [{"summary": None, "error": "Batch processing failed"}] * batch_size

@@ -1,8 +1,9 @@
 """Tests for rsstools/cache.py."""
 
+import hashlib
 import os
 import time
-import hashlib
+
 from rsstools.cache import LLMCache
 
 
@@ -23,7 +24,7 @@ class TestLLMCache:
     def test_key_generates_sha256(self, temp_cache_dir):
         cache = LLMCache(temp_cache_dir)
         key = cache._key("gpt-4", "system prompt", "user message")
-        expected = hashlib.sha256("gpt-4|system prompt|user message".encode()).hexdigest()
+        expected = hashlib.sha256(b"gpt-4|system prompt|user message").hexdigest()
         assert key == expected
 
     def test_key_is_consistent(self, temp_cache_dir):
@@ -65,9 +66,9 @@ class TestLLMCache:
 
     def test_get_with_unicode(self, temp_cache_dir):
         cache = LLMCache(temp_cache_dir)
-        cache.put("model", "system", "user", "Unicode: \u4e2d\u6587 \U0001F600")
+        cache.put("model", "system", "user", "Unicode: \u4e2d\u6587 \U0001f600")
         result = cache.get("model", "system", "user")
-        assert result == "Unicode: \u4e2d\u6587 \U0001F600"
+        assert result == "Unicode: \u4e2d\u6587 \U0001f600"
 
     def test_clean_empty_directory(self, temp_cache_dir):
         cache = LLMCache(temp_cache_dir)

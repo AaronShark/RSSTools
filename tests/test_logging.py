@@ -1,14 +1,9 @@
 """Tests for logging configuration"""
 
 import logging
-import json
-import io
-import sys
 
-import pytest
-
-from rsstools.logging_config import setup_logging, get_logger, add_correlation_id
-from rsstools.context import set_correlation_id, get_correlation_id, correlation_id
+from rsstools.context import correlation_id, get_correlation_id, set_correlation_id
+from rsstools.logging_config import add_correlation_id, get_logger, setup_logging
 
 
 class TestSetupLogging:
@@ -37,10 +32,10 @@ class TestSetupLogging:
     def test_get_logger_returns_bound_logger(self):
         setup_logging(level="INFO")
         logger = get_logger("test_module")
-        assert hasattr(logger, 'info')
-        assert hasattr(logger, 'debug')
-        assert hasattr(logger, 'warning')
-        assert hasattr(logger, 'error')
+        assert hasattr(logger, "info")
+        assert hasattr(logger, "debug")
+        assert hasattr(logger, "warning")
+        assert hasattr(logger, "error")
 
 
 class TestCorrelationId:

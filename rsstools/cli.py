@@ -1,27 +1,30 @@
 """CLI commands for RSSTools"""
 
-import os
 import asyncio
+import os
 from html import escape as html_escape
 
-import aiohttp
 import aiofiles
+import aiohttp
 import feedparser
 from rich.console import Console
 from rich.panel import Panel
 from rich.progress import (
-    Progress, SpinnerColumn, BarColumn, TextColumn, MofNCompleteColumn,
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
 )
 from rich.table import Table
 
-from .config import load_config
 from .cache import LLMCache
-from .llm import LLMClient
-from .index import IndexManager
-from .downloader import ArticleDownloader
-from .utils import parse_opml, extract_front_matter, rebuild_front_matter
-from .logging_config import get_logger
 from .context import set_correlation_id
+from .downloader import ArticleDownloader
+from .index import IndexManager
+from .llm import LLMClient
+from .logging_config import get_logger
+from .utils import extract_front_matter, parse_opml, rebuild_front_matter
 
 console = Console()
 logger = get_logger(__name__)
@@ -59,25 +62,27 @@ async def cmd_download(cfg: dict, force: bool = False):
 
         async def process_feed(feed, idx):
             async with sem:
-                tag = feed['title'][:25]
+                tag = feed["title"][:25]
                 console.print(f"\n[{idx}/{len(feeds)}] {feed['title']}")
-                url = feed['url']
+                url = feed["url"]
                 if not force and index.should_skip_feed(url, cfg["download"]["max_retries"]):
-                    console.print(f"  [{tag}] [yellow]Skipped (previously failed, retry after 24h)[/yellow]")
+                    console.print(
+                        f"  [{tag}] [yellow]Skipped (previously failed, retry after 24h)[/yellow]"
+                    )
                     return
                 try:
                     # Build conditional request headers from cached ETag/Last-Modified
                     etag_info = index.get_feed_etag(url, max_age_days=etag_max_age)
                     cond_headers = {}
-                    if etag_info.get('etag'):
-                        cond_headers['If-None-Match'] = etag_info['etag']
-                    if etag_info.get('last_modified'):
-                        cond_headers['If-Modified-Since'] = etag_info['last_modified']
+                    if etag_info.get("etag"):
+                        cond_headers["If-None-Match"] = etag_info["etag"]
+                    if etag_info.get("last_modified"):
+                        cond_headers["If-Modified-Since"] = etag_info["last_modified"]
 
                     feed_content, error, resp_headers = await downloader.download_with_retry(
                         session, url, extra_headers=cond_headers if cond_headers else None
                     )
-                    if feed_content == '' and error is None:
+                    if feed_content == "" and error is None:
                         # 304 Not Modified — feed unchanged
                         console.print(f"  [{tag}] [dim]Not modified (skipped)[/dim]")
                         return
@@ -89,28 +94,32 @@ async def cmd_download(cfg: dict, force: bool = False):
                     # Feed fetched successfully — clear any previous failure record
                     index.clear_feed_failure(url)
                     # Store ETag/Last-Modified for next run
-                    if resp_headers.get('etag') or resp_headers.get('last_modified'):
-                        index.set_feed_etag(url, resp_headers.get('etag', ''), resp_headers.get('last_modified', ''))
+                    if resp_headers.get("etag") or resp_headers.get("last_modified"):
+                        index.set_feed_etag(
+                            url, resp_headers.get("etag", ""), resp_headers.get("last_modified", "")
+                        )
                     parsed = feedparser.parse(feed_content)
                     if not parsed.entries:
                         console.print(f"  [{tag}] [yellow]No entries[/yellow]")
                         return
                     entries = []
                     for entry in parsed.entries:
-                        fc = ''
-                        if entry.get('content'):
-                            fc = entry['content'][0].get('value', '')
-                        elif entry.get('summary'):
-                            fc = entry['summary']
-                        entries.append({
-                            'title': entry.get('title', 'Unknown'),
-                            'link': entry.get('link', ''),
-                            'published': entry.get('published', entry.get('updated', '')),
-                            'content': fc,
-                        })
+                        fc = ""
+                        if entry.get("content"):
+                            fc = entry["content"][0].get("value", "")
+                        elif entry.get("summary"):
+                            fc = entry["summary"]
+                        entries.append(
+                            {
+                                "title": entry.get("title", "Unknown"),
+                                "link": entry.get("link", ""),
+                                "published": entry.get("published", entry.get("updated", "")),
+                                "content": fc,
+                            }
+                        )
                     logger.info("feed_parsed", feed=tag, entry_count=len(entries))
                     console.print(f"  [{tag}] Found {len(entries)} entries", style="green")
-                    await downloader.download_articles(session, entries, feed['title'], url)
+                    await downloader.download_articles(session, entries, feed["title"], url)
                 except Exception as e:
                     logger.error("feed_process_error", feed=tag, error=str(e))
                     console.print(f"  [{tag}] [red]Error: {e}[/red]")
@@ -121,17 +130,25 @@ async def cmd_download(cfg: dict, force: bool = False):
 
     index.flush()
     stats = index.get_stats()
-    logger.info("download_complete", downloaded=downloader.downloaded, failed=downloader.failed, total=stats['total_articles'])
-    console.print(Panel(
-        f"[green]Download complete[/green]\n"
-        f"  This run: {downloader.downloaded} downloaded, {downloader.failed} failed\n"
-        f"  Total: {stats['total_articles']} articles, {stats['feed_failures']} feed failures",
-        title="Summary", border_style="green",
-    ))
+    logger.info(
+        "download_complete",
+        downloaded=downloader.downloaded,
+        failed=downloader.failed,
+        total=stats["total_articles"],
+    )
+    console.print(
+        Panel(
+            f"[green]Download complete[/green]\n"
+            f"  This run: {downloader.downloaded} downloaded, {downloader.failed} failed\n"
+            f"  Total: {stats['total_articles']} articles, {stats['feed_failures']} feed failures",
+            title="Summary",
+            border_style="green",
+        )
+    )
 
     log_path = os.path.join(base_dir, "download.log")
     try:
-        with open(log_path, 'w', encoding='utf-8') as f:
+        with open(log_path, "w", encoding="utf-8") as f:
             f.write(console.export_text())
     except Exception:
         pass
@@ -150,18 +167,16 @@ async def cmd_summarize(cfg: dict, force: bool = False):
         console.print("[red]LLM api_key not set (config llm.api_key or env GLM_API_KEY)[/red]")
         return
 
-    articles = index.data.get('articles', {})
+    articles = index.data.get("articles", {})
     if force:
         to_summarize = [
-            {'url': url, **meta}
-            for url, meta in articles.items()
-            if 'filepath' in meta
+            {"url": url, **meta} for url, meta in articles.items() if "filepath" in meta
         ]
     else:
         to_summarize = [
-            {'url': url, **meta}
+            {"url": url, **meta}
             for url, meta in articles.items()
-            if 'summary' not in meta and 'filepath' in meta
+            if "summary" not in meta and "filepath" in meta
         ]
     total = len(articles)
     pending = len(to_summarize)
@@ -172,7 +187,7 @@ async def cmd_summarize(cfg: dict, force: bool = False):
         console.print("[green]All articles already have summaries.[/green]")
         return
 
-    counters = {'summarized': 0, 'scored': 0, 'failed': 0}
+    counters = {"summarized": 0, "scored": 0, "failed": 0}
     save_every = cfg["summarize"]["save_every"]
 
     async with aiohttp.ClientSession() as session:
@@ -183,73 +198,78 @@ async def cmd_summarize(cfg: dict, force: bool = False):
             MofNCompleteColumn(),
             console=console,
         ) as progress:
-            task_id = progress.add_task(
-                f"Done: 0, Remaining: {pending}, Failed: 0", total=pending)
+            task_id = progress.add_task(f"Done: 0, Remaining: {pending}, Failed: 0", total=pending)
 
             for i in range(0, len(to_summarize), 10):
-                batch = to_summarize[i:i + 10]
+                batch = to_summarize[i : i + 10]
 
                 batch_articles = []
                 for article in batch:
-                    filepath = os.path.join(base_dir, article['filepath'])
+                    filepath = os.path.join(base_dir, article["filepath"])
                     if not os.path.exists(filepath):
                         continue
                     try:
-                        async with aiofiles.open(filepath, 'r', encoding='utf-8') as f:
+                        async with aiofiles.open(filepath, encoding="utf-8") as f:
                             text = await f.read()
                         fm, body = extract_front_matter(text)
                         if fm is not None:
-                            batch_articles.append({
-                                'filepath': filepath,
-                                'url': article['url'],
-                                'title': article.get('title', ''),
-                                'body': body.strip(),
-                                'fm': fm
-                            })
-                    except IOError:
+                            batch_articles.append(
+                                {
+                                    "filepath": filepath,
+                                    "url": article["url"],
+                                    "title": article.get("title", ""),
+                                    "body": body.strip(),
+                                    "fm": fm,
+                                }
+                            )
+                    except OSError:
                         pass
 
                 if not batch_articles:
                     continue
 
                 batch_summaries = await llm.summarize_batch(
-                    session,
-                    [{'title': a['title'], 'content': a['body']} for a in batch_articles]
+                    session, [{"title": a["title"], "content": a["body"]} for a in batch_articles]
                 )
 
                 for article, result in zip(batch_articles, batch_summaries):
-                    url = article['url']
-                    summary = result.get('summary')
-                    error = result.get('error')
+                    url = article["url"]
+                    summary = result.get("summary")
+                    error = result.get("error")
 
                     if summary:
-                        article['fm']['summary'] = summary
-                        new_text = rebuild_front_matter(article['fm'], article['body'])
+                        article["fm"]["summary"] = summary
+                        new_text = rebuild_front_matter(article["fm"], article["body"])
                         try:
-                            async with aiofiles.open(article['filepath'], 'w', encoding='utf-8') as f:
+                            async with aiofiles.open(
+                                article["filepath"], "w", encoding="utf-8"
+                            ) as f:
                                 await f.write(new_text)
-                        except IOError as e:
-                            counters['failed'] += 1
+                        except OSError as e:
+                            counters["failed"] += 1
                             progress.console.print(f"    [red]Write error: {e}[/red]")
                             progress.advance(task_id)
                             continue
 
-                        index.data['articles'][url]['summary'] = summary
+                        index.data["articles"][url]["summary"] = summary
                         index._dirty = True
-                        counters['summarized'] += 1
+                        counters["summarized"] += 1
 
                         scores, score_error = await llm.score_and_classify(
-                            session, article['title'], article['body']
+                            session, article["title"], article["body"]
                         )
                         if scores:
-                            index.update_article_scores(url, {
-                                'score_relevance': scores.get('relevance'),
-                                'score_quality': scores.get('quality'),
-                                'score_timeliness': scores.get('timeliness'),
-                                'category': scores.get('category'),
-                                'keywords': scores.get('keywords', [])
-                            })
-                            counters['scored'] += 1
+                            index.update_article_scores(
+                                url,
+                                {
+                                    "score_relevance": scores.get("relevance"),
+                                    "score_quality": scores.get("quality"),
+                                    "score_timeliness": scores.get("timeliness"),
+                                    "category": scores.get("category"),
+                                    "keywords": scores.get("keywords", []),
+                                },
+                            )
+                            counters["scored"] += 1
                             progress.console.print(
                                 f"    [green]OK[/green] {article['title'][:40]}... "
                                 f"[dim]({scores.get('category')}, "
@@ -260,26 +280,33 @@ async def cmd_summarize(cfg: dict, force: bool = False):
                                 f"    [yellow]OK (no scores)[/yellow] {article['title'][:40]}..."
                             )
 
-                        if counters['summarized'] % save_every == 0:
+                        if counters["summarized"] % save_every == 0:
                             index.flush()
                     else:
-                        counters['failed'] += 1
+                        counters["failed"] += 1
                         if error:
                             progress.console.print(
                                 f"    [red]FAIL[/red] {article['title'][:40]}: {error}"
                             )
                         index.record_summary_failure(
-                            url, article['title'], article['filepath'], error or 'Unknown'
+                            url, article["title"], article["filepath"], error or "Unknown"
                         )
 
                     progress.advance(task_id)
-                    done = counters['summarized']
-                    remaining = pending - done - counters['failed']
-                    progress.update(task_id,
-                        description=f"Done: {done}, Remaining: {remaining}, Failed: {counters['failed']}")
+                    done = counters["summarized"]
+                    remaining = pending - done - counters["failed"]
+                    progress.update(
+                        task_id,
+                        description=f"Done: {done}, Remaining: {remaining}, Failed: {counters['failed']}",
+                    )
 
     index.flush()
-    logger.info("summarize_complete", summarized=counters['summarized'], scored=counters['scored'], failed=counters['failed'])
+    logger.info(
+        "summarize_complete",
+        summarized=counters["summarized"],
+        scored=counters["scored"],
+        failed=counters["failed"],
+    )
     console.print(
         f"\n[green]Done![/green] Summarized: {counters['summarized']}, "
         f"Scored: {counters['scored']}, Failed: {counters['failed']}"
@@ -300,26 +327,28 @@ def cmd_failed(cfg: dict):
 
     # Find feeds that have at least one downloaded article
     successful_urls = set()
-    for meta in index.data.get('articles', {}).values():
-        feed_url = meta.get('feed_url')
+    for meta in index.data.get("articles", {}).values():
+        feed_url = meta.get("feed_url")
         if feed_url:
             successful_urls.add(feed_url)
 
     failed_feeds = []
     never_tried = []
     for f in all_feeds:
-        if f['url'] not in successful_urls:
-            failure_info = index.get_feed_failure_info(f['url'])
+        if f["url"] not in successful_urls:
+            failure_info = index.get_feed_failure_info(f["url"])
             if failure_info:
-                failed_feeds.append({**f, 'failure_info': failure_info})
+                failed_feeds.append({**f, "failure_info": failure_info})
             else:
                 never_tried.append(f)
 
     console.print(f"Failed feeds: {len(failed_feeds)}")
     for f in failed_feeds:
-        info = f.get('failure_info', {})
+        info = f.get("failure_info", {})
         console.print(f"  - [red]{f['title']}[/red]: {f['url']}")
-        console.print(f"    Error: {info.get('error', 'Unknown')}, Retries: {info.get('retries', 0)}")
+        console.print(
+            f"    Error: {info.get('error', 'Unknown')}, Retries: {info.get('retries', 0)}"
+        )
 
     console.print(f"\nNever tried: {len(never_tried)}")
     for f in never_tried:
@@ -329,27 +358,31 @@ def cmd_failed(cfg: dict):
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<opml version="1.1">',
-        '  <head><title>Failed and Never Tried Feeds</title></head>',
-        '  <body>',
+        "  <head><title>Failed and Never Tried Feeds</title></head>",
+        "  <body>",
     ]
     if failed_feeds:
-        lines.append('    <!-- Failed Feeds -->')
+        lines.append("    <!-- Failed Feeds -->")
         for f in failed_feeds:
-            t = html_escape(f['title'])
-            x = html_escape(f['url'])
-            h = html_escape(f.get('html_url', ''))
-            lines.append(f'    <outline text="{t}" title="{t}" type="rss" xmlUrl="{x}" htmlUrl="{h}"/>')
+            t = html_escape(f["title"])
+            x = html_escape(f["url"])
+            h = html_escape(f.get("html_url", ""))
+            lines.append(
+                f'    <outline text="{t}" title="{t}" type="rss" xmlUrl="{x}" htmlUrl="{h}"/>'
+            )
     if never_tried:
-        lines.append('    <!-- Never Tried -->')
+        lines.append("    <!-- Never Tried -->")
         for f in never_tried:
-            t = html_escape(f['title'])
-            x = html_escape(f['url'])
-            h = html_escape(f.get('html_url', ''))
-            lines.append(f'    <outline text="{t}" title="{t}" type="rss" xmlUrl="{x}" htmlUrl="{h}"/>')
-    lines.extend(['  </body>', '</opml>', ''])
+            t = html_escape(f["title"])
+            x = html_escape(f["url"])
+            h = html_escape(f.get("html_url", ""))
+            lines.append(
+                f'    <outline text="{t}" title="{t}" type="rss" xmlUrl="{x}" htmlUrl="{h}"/>'
+            )
+    lines.extend(["  </body>", "</opml>", ""])
 
-    with open(output_path, 'w', encoding='utf-8') as fp:
-        fp.write('\n'.join(lines))
+    with open(output_path, "w", encoding="utf-8") as fp:
+        fp.write("\n".join(lines))
     console.print(f"\nOPML written to: {output_path}")
 
 
@@ -359,30 +392,29 @@ def cmd_stats(cfg: dict):
     index = IndexManager(base_dir)
     stats = index.get_stats()
 
-    articles = index.data.get('articles', {})
+    articles = index.data.get("articles", {})
     # Article length stats
-    articles_dir = os.path.join(base_dir, "articles")
     lengths = []
     for meta in articles.values():
-        fp = os.path.join(base_dir, meta.get('filepath', ''))
+        fp = os.path.join(base_dir, meta.get("filepath", ""))
         if os.path.exists(fp):
             lengths.append(os.path.getsize(fp))
 
     # Sources breakdown
     sources = {}
     for meta in articles.values():
-        src = meta.get('source_name', 'Unknown')
+        src = meta.get("source_name", "Unknown")
         sources[src] = sources.get(src, 0) + 1
 
     table = Table(title="RSSKB Statistics", show_header=False, border_style="blue")
     table.add_column("Metric", style="cyan")
     table.add_column("Value", style="green")
-    table.add_row("Total articles", str(stats['total_articles']))
-    table.add_row("With summary", str(stats['with_summary']))
-    table.add_row("Without summary", str(stats['without_summary']))
-    table.add_row("Feed failures", str(stats['feed_failures']))
-    table.add_row("Article failures", str(stats['article_failures']))
-    table.add_row("Summary failures", str(stats['summary_failures']))
+    table.add_row("Total articles", str(stats["total_articles"]))
+    table.add_row("With summary", str(stats["with_summary"]))
+    table.add_row("Without summary", str(stats["without_summary"]))
+    table.add_row("Feed failures", str(stats["feed_failures"]))
+    table.add_row("Article failures", str(stats["article_failures"]))
+    table.add_row("Summary failures", str(stats["summary_failures"]))
     if lengths:
         avg_len = sum(lengths) // len(lengths)
         table.add_row("Avg article size", f"{avg_len:,} bytes")
@@ -404,12 +436,15 @@ def cmd_stats(cfg: dict):
 def cmd_config(cfg: dict):
     """Show current configuration."""
     import json
+
     console.print(Panel(json.dumps(cfg, indent=2, ensure_ascii=False), title="Current Config"))
     config_path = os.path.expanduser("~/.rsstools/config.json")
     console.print(f"\nConfig file: {config_path}")
     if not os.path.exists(config_path):
-        console.print("[dim]No config file found. Using defaults. "
-                      "Create ~/.rsstools/config.json to customize.[/dim]")
+        console.print(
+            "[dim]No config file found. Using defaults. "
+            "Create ~/.rsstools/config.json to customize.[/dim]"
+        )
 
 
 def cmd_clean_cache(cfg: dict, max_age_days: int = 30, dry_run: bool = False):

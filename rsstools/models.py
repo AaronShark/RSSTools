@@ -1,7 +1,8 @@
 """Pydantic models for RSSTools configuration."""
 
 from typing import Any
-from pydantic import BaseModel, Field, field_validator, model_validator
+
+from pydantic import BaseModel, Field, field_validator
 
 
 class LLMConfig(BaseModel):
@@ -20,32 +21,32 @@ class LLMConfig(BaseModel):
         "in the same language as the article.\n\nTitle: {title}\n\n{content}"
     )
 
-    @field_validator('models')
+    @field_validator("models")
     @classmethod
     def models_not_empty(cls, v: list[str]) -> list[str]:
         if not v:
-            raise ValueError('models list must not be empty')
+            raise ValueError("models list must not be empty")
         return v
 
-    @field_validator('temperature')
+    @field_validator("temperature")
     @classmethod
     def temperature_range(cls, v: float) -> float:
         if not 0.0 <= v <= 2.0:
-            raise ValueError('temperature must be between 0.0 and 2.0')
+            raise ValueError("temperature must be between 0.0 and 2.0")
         return v
 
-    @field_validator('max_tokens')
+    @field_validator("max_tokens")
     @classmethod
     def max_tokens_positive(cls, v: int) -> int:
         if v <= 0:
-            raise ValueError('max_tokens must be positive')
+            raise ValueError("max_tokens must be positive")
         return v
 
-    @field_validator('timeout', 'max_retries')
+    @field_validator("timeout", "max_retries")
     @classmethod
     def positive_int(cls, v: int) -> int:
         if v <= 0:
-            raise ValueError('must be positive')
+            raise ValueError("must be positive")
         return v
 
     def __getitem__(self, key: str) -> Any:
@@ -66,18 +67,25 @@ class DownloadConfig(BaseModel):
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     )
 
-    @field_validator('concurrent_downloads', 'concurrent_feeds')
+    @field_validator("concurrent_downloads", "concurrent_feeds")
     @classmethod
     def concurrent_range(cls, v: int) -> int:
         if not 1 <= v <= 20:
-            raise ValueError('must be between 1 and 20')
+            raise ValueError("must be between 1 and 20")
         return v
 
-    @field_validator('timeout', 'connect_timeout', 'max_retries', 'retry_delay', 'max_redirects', 'etag_max_age_days')
+    @field_validator(
+        "timeout",
+        "connect_timeout",
+        "max_retries",
+        "retry_delay",
+        "max_redirects",
+        "etag_max_age_days",
+    )
     @classmethod
     def positive_int(cls, v: int) -> int:
         if v <= 0:
-            raise ValueError('must be positive')
+            raise ValueError("must be positive")
         return v
 
     def __getitem__(self, key: str) -> Any:
@@ -87,11 +95,11 @@ class DownloadConfig(BaseModel):
 class SummarizeConfig(BaseModel):
     save_every: int = 20
 
-    @field_validator('save_every')
+    @field_validator("save_every")
     @classmethod
     def positive_int(cls, v: int) -> int:
         if v <= 0:
-            raise ValueError('must be positive')
+            raise ValueError("must be positive")
         return v
 
     def __getitem__(self, key: str) -> Any:

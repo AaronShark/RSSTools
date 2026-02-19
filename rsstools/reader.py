@@ -2,22 +2,20 @@
 
 import json
 import os
-import webbrowser
 import re
 import warnings
+import webbrowser
 from datetime import datetime
-from typing import List, Dict, Tuple, Optional
 
 # Suppress dateutil timezone warnings
 warnings.filterwarnings("ignore", message=".*tzname.*identified but not understood.*")
 
 from textual.app import App, ComposeResult
-from textual.containers import Container, VerticalScroll
-from textual.widgets import Header, Footer, Static, Label, Input
 from textual.binding import Binding
+from textual.containers import Container, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import ModalScreen
-
+from textual.widgets import Footer, Header, Input, Label, Static
 
 # Nord Color Scheme
 NORD = {
@@ -204,7 +202,7 @@ HelpPanel {{
 class ArticleWidget(Static):
     """Single article display widget"""
 
-    def __init__(self, article: Dict, index: int, is_selected: bool = False):
+    def __init__(self, article: dict, index: int, is_selected: bool = False):
         self.article = article
         self.index = index
         self.is_selected = is_selected
@@ -217,15 +215,16 @@ class ArticleWidget(Static):
         yield Label(f"{'━' * 60}", classes="separator")
 
         # Title with icon
-        title = self.article['title'][:80]
+        title = self.article["title"][:80]
         title_class = "article-title-selected" if self.is_selected else "article-title"
         yield Label(f"{'▶' if self.is_selected else '📰'} {num}. {title}", classes=title_class)
 
         # Meta (date and source) with icons
-        date_str = self.article['published']
+        date_str = self.article["published"]
         if date_str:
             try:
                 from dateutil import parser
+
                 dt = parser.parse(date_str)
                 date_display = dt.strftime("%Y-%m-%d %H:%M")
             except:
@@ -238,43 +237,46 @@ class ArticleWidget(Static):
         yield meta
 
         # URL with icon
-        url = self.article['url']
+        url = self.article["url"]
         if len(url) > 70:
             url = url[:67] + "..."
         yield Label(f"  🔗 URL: {url}", classes="article-url")
 
         # Category and scores if available
-        category = self.article.get('category', '')
+        category = self.article.get("category", "")
         if category:
             cat_emoji = {
-                'ai-ml': '🤖',
-                'security': '🔒',
-                'engineering': '⚙️',
-                'tools': '🛠️',
-                'opinion': '💭',
-                'other': '📄'
-            }.get(category, '📄')
+                "ai-ml": "🤖",
+                "security": "🔒",
+                "engineering": "⚙️",
+                "tools": "🛠️",
+                "opinion": "💭",
+                "other": "📄",
+            }.get(category, "📄")
             yield Label(f"  {cat_emoji} Category: {category}", classes="article-meta")
 
         # Scores if available
-        rel = self.article.get('score_relevance')
-        qual = self.article.get('score_quality')
-        time = self.article.get('score_timeliness')
+        rel = self.article.get("score_relevance")
+        qual = self.article.get("score_quality")
+        time = self.article.get("score_timeliness")
         if rel is not None:
-            yield Label(f"  📊 Scores: Relevance={rel}/10, Quality={qual}/10, Timeliness={time}/10", classes="article-meta")
+            yield Label(
+                f"  📊 Scores: Relevance={rel}/10, Quality={qual}/10, Timeliness={time}/10",
+                classes="article-meta",
+            )
 
         # Keywords if available
-        keywords = self.article.get('keywords', [])
+        keywords = self.article.get("keywords", [])
         if keywords:
-            kw_str = ', '.join(keywords[:5])
+            kw_str = ", ".join(keywords[:5])
             if len(keywords) > 5:
-                kw_str += '...'
+                kw_str += "..."
             yield Label(f"  🏷️  Keywords: {kw_str}", classes="article-meta")
 
         # Summary with icon
         yield Label("  📝 Summary:", classes="article-summary-label")
 
-        summary = self.article['summary']
+        summary = self.article["summary"]
         words = summary.split()
         lines = []
         current_line = ""
@@ -323,8 +325,8 @@ class RSSReaderApp(App):
         super().__init__()
         self.json_path = os.path.expanduser(json_path)
         self.base_dir = os.path.dirname(os.path.dirname(self.json_path))
-        self.articles: List[Dict] = []
-        self.filtered_articles: List[Dict] = []
+        self.articles: list[dict] = []
+        self.filtered_articles: list[dict] = []
         self.per_page = 5
         self.message = ""
         self.search_query = ""
@@ -337,35 +339,35 @@ class RSSReaderApp(App):
     def load_articles(self):
         """Load and sort articles from JSON"""
         try:
-            with open(self.json_path, 'r', encoding='utf-8') as f:
+            with open(self.json_path, encoding="utf-8") as f:
                 data = json.load(f)
 
             articles = []
-            for url, info in data.get('articles', {}).items():
-                articles.append({
-                    'url': url,
-                    'title': info.get('title', 'No Title'),
-                    'published': info.get('published', ''),
-                    'source_name': info.get('source_name', 'Unknown'),
-                    'summary': info.get('summary', 'No summary available.'),
-                    'category': info.get('category', ''),
-                    'score_relevance': info.get('score_relevance'),
-                    'score_quality': info.get('score_quality'),
-                    'score_timeliness': info.get('score_timeliness'),
-                    'keywords': info.get('keywords', []),
-                })
+            for url, info in data.get("articles", {}).items():
+                articles.append(
+                    {
+                        "url": url,
+                        "title": info.get("title", "No Title"),
+                        "published": info.get("published", ""),
+                        "source_name": info.get("source_name", "Unknown"),
+                        "summary": info.get("summary", "No summary available."),
+                        "category": info.get("category", ""),
+                        "score_relevance": info.get("score_relevance"),
+                        "score_quality": info.get("score_quality"),
+                        "score_timeliness": info.get("score_timeliness"),
+                        "keywords": info.get("keywords", []),
+                    }
+                )
 
             self.articles = sorted(
-                articles,
-                key=lambda x: self._parse_date(x['published']),
-                reverse=True
+                articles, key=lambda x: self._parse_date(x["published"]), reverse=True
             )
             self.filtered_articles = self.articles[:]
             self.message = f"Loaded {len(self.articles)} articles"
 
             # Find min and max dates
             if self.articles:
-                dates = [self._parse_date(a['published']) for a in self.articles]
+                dates = [self._parse_date(a["published"]) for a in self.articles]
                 dates = [d for d in dates if d != datetime.min]
                 if dates:
                     self.min_date = min(dates).strftime("%Y-%m-%d")
@@ -379,6 +381,7 @@ class RSSReaderApp(App):
     def _parse_date(self, date_str: str) -> datetime:
         """Parse various date formats"""
         from dateutil import parser
+
         try:
             dt = parser.parse(date_str)
             if dt.tzinfo is not None:
@@ -387,35 +390,32 @@ class RSSReaderApp(App):
         except:
             return datetime.min
 
-    def _load_article_body(self, filepath: str) -> Optional[str]:
+    def _load_article_body(self, filepath: str) -> str | None:
         """Load article body from file on demand"""
         if not filepath:
             return ""
         try:
             full_path = os.path.join(self.base_dir, filepath)
-            with open(full_path, 'r', encoding='utf-8') as f:
+            with open(full_path, encoding="utf-8") as f:
                 from .utils import extract_front_matter
+
                 fm, body = extract_front_matter(f.read())
                 return body if fm else ""
         except Exception:
             return ""
 
-    def _get_article_score(self, article: Dict) -> Tuple[int, int, int]:
+    def _get_article_score(self, article: dict) -> tuple[int, int, int]:
         """Get article score as tuple (relevance, quality, timeliness)"""
-        relevance = article.get('score_relevance', 0) or 0
-        quality = article.get('score_quality', 0) or 0
-        timeliness = article.get('score_timeliness', 0) or 0
+        relevance = article.get("score_relevance", 0) or 0
+        quality = article.get("score_quality", 0) or 0
+        timeliness = article.get("score_timeliness", 0) or 0
         return (relevance, quality, timeliness)
 
-    def _sort_articles_by_score(self, articles: List[Dict]) -> List[Dict]:
+    def _sort_articles_by_score(self, articles: list[dict]) -> list[dict]:
         """Sort articles by score (relevance > quality > timeliness)"""
-        return sorted(
-            articles,
-            key=lambda x: self._get_article_score(x),
-            reverse=True
-        )
+        return sorted(articles, key=lambda x: self._get_article_score(x), reverse=True)
 
-    def _match_search(self, article: Dict, query: str) -> bool:
+    def _match_search(self, article: dict, query: str) -> bool:
         """
         Match article against search query.
         Searches in: title, summary, keywords, body (loaded on demand)
@@ -430,36 +430,36 @@ class RSSReaderApp(App):
             return True
 
         # Build searchable text: title + summary + keywords + body
-        text_parts = [article['title'], article['summary']]
+        text_parts = [article["title"], article["summary"]]
 
         # Add keywords
-        keywords = article.get('keywords', [])
+        keywords = article.get("keywords", [])
         if keywords:
-            text_parts.append(' '.join(keywords))
+            text_parts.append(" ".join(keywords))
 
         # Load body on demand (only during search)
-        body = self._load_article_body(article.get('filepath', ''))
+        body = self._load_article_body(article.get("filepath", ""))
         if body:
             text_parts.append(body)
 
-        text = ' '.join(text_parts).lower()
+        text = " ".join(text_parts).lower()
 
         # Parse query
         query = query.strip()
 
         # Handle OR first (split by OR)
-        if ' or ' in query.lower():
-            parts = re.split(r'\s+or\s+', query, flags=re.IGNORECASE)
+        if " or " in query.lower():
+            parts = re.split(r"\s+or\s+", query, flags=re.IGNORECASE)
             return any(self._match_search(article, p.strip()) for p in parts)
 
         # Handle NOT (words starting with -)
-        not_words = re.findall(r'-(\w+)', query)
+        not_words = re.findall(r"-(\w+)", query)
         for word in not_words:
             if word.lower() in text:
                 return False
 
         # Remove NOT words from query
-        query = re.sub(r'-\w+\s*', '', query).strip()
+        query = re.sub(r"-\w+\s*", "", query).strip()
 
         # Handle quoted phrases
         phrases = re.findall(r'"([^"]+)"', query)
@@ -468,7 +468,7 @@ class RSSReaderApp(App):
                 return False
 
         # Remove quoted phrases from query
-        query = re.sub(r'"[^"]+"\s*', '', query).strip()
+        query = re.sub(r'"[^"]+"\s*', "", query).strip()
 
         # Remaining words (AND logic)
         if query:
@@ -478,7 +478,7 @@ class RSSReaderApp(App):
                 if not word:
                     continue
                 # Word boundary match to avoid partial matches like "ai" in "email"
-                pattern = r'\b' + re.escape(word.lower()) + r'\b'
+                pattern = r"\b" + re.escape(word.lower()) + r"\b"
                 if not re.search(pattern, text):
                     return False
 
@@ -496,8 +496,9 @@ class RSSReaderApp(App):
 
         # Date filter
         if self.date_start or self.date_end:
+
             def date_match(article):
-                pub_date = self._parse_date(article['published'])
+                pub_date = self._parse_date(article["published"])
                 if self.date_start:
                     try:
                         start = datetime.strptime(self.date_start, "%Y-%m-%d")
@@ -543,9 +544,11 @@ class RSSReaderApp(App):
         filters = []
         if self.search_query:
             filters.append(f'🔍 Search="{self.search_query}" [C=Clear]')
-            filters.append('📊 Sort: Score (Relevance>Quality>Timeliness)')
+            filters.append("📊 Sort: Score (Relevance>Quality>Timeliness)")
         if self.date_start or self.date_end:
-            filters.append(f'📅 Date={self.date_start or "..."} ~ {self.date_end or "..."} [X=Clear]')
+            filters.append(
+                f"📅 Date={self.date_start or '...'} ~ {self.date_end or '...'} [X=Clear]"
+            )
 
         if filters:
             return f"Filters: {' | '.join(filters)}"
@@ -567,7 +570,7 @@ class RSSReaderApp(App):
 
         if page_articles:
             for i, article in enumerate(page_articles):
-                is_selected = (i == self.selected_index)
+                is_selected = i == self.selected_index
                 widget = ArticleWidget(article, start + i, is_selected)
                 widgets.append(widget)
                 if is_selected:
@@ -580,8 +583,7 @@ class RSSReaderApp(App):
                 self.call_after_refresh(self._scroll_to_item, selected_widget)
         else:
             no_articles = Label(
-                "No matching articles found\nPress R to reset all filters",
-                classes="no-articles"
+                "No matching articles found\nPress R to reset all filters", classes="no-articles"
             )
             container.mount(no_articles)
 
@@ -620,7 +622,9 @@ class RSSReaderApp(App):
             self.selected_index -= 1
         elif self.page > 0:
             self.page -= 1
-            page_articles = self.filtered_articles[self.page * self.per_page:(self.page + 1) * self.per_page]
+            page_articles = self.filtered_articles[
+                self.page * self.per_page : (self.page + 1) * self.per_page
+            ]
             self.selected_index = min(self.per_page - 1, len(page_articles) - 1)
         self._update_articles()
 
@@ -640,7 +644,7 @@ class RSSReaderApp(App):
         start = self.page * self.per_page
         index = start + self.selected_index
         if 0 <= index < len(self.filtered_articles):
-            url = self.filtered_articles[index]['url']
+            url = self.filtered_articles[index]["url"]
             try:
                 webbrowser.open(url)
                 self.message = f"✅ Opened: {url[:50]}..."
@@ -689,8 +693,8 @@ class RSSReaderApp(App):
 
     def action_close_help_or_palette(self):
         """Close help panel or command palette if open"""
-        from textual.widgets import HelpPanel
         from textual.command import CommandPalette
+        from textual.widgets import HelpPanel
 
         # Try to close help panel first
         try:
@@ -754,23 +758,27 @@ class SearchScreen(ModalScreen):
         Binding("escape", "cancel", "Cancel"),
     ]
 
-    def __init__(self, parent_app: 'RSSReaderApp'):
+    def __init__(self, parent_app: "RSSReaderApp"):
         super().__init__()
         self.parent_app = parent_app
 
     def compose(self) -> ComposeResult:
-        current = f"Current: \"{self.parent_app.search_query}\"" if self.parent_app.search_query else "Current: None"
+        current = (
+            f'Current: "{self.parent_app.search_query}"'
+            if self.parent_app.search_query
+            else "Current: None"
+        )
 
         yield Container(
             Label("🔍 Search Articles", classes="modal-title"),
             Label("Supports:", classes="modal-label"),
             Label("  • Multiple words (AND): python web", classes="modal-hint"),
-            Label("  • Quoted phrases: \"machine learning\"", classes="modal-hint"),
+            Label('  • Quoted phrases: "machine learning"', classes="modal-hint"),
             Label("  • OR logic: ai OR ml", classes="modal-hint"),
             Label("  • NOT logic: ai -python", classes="modal-hint"),
             Label(current, classes="modal-current"),
             Input(placeholder="Search...", id="search-input", value=self.parent_app.search_query),
-            classes="modal-container"
+            classes="modal-container",
         )
 
     def on_mount(self):
@@ -785,7 +793,9 @@ class SearchScreen(ModalScreen):
             self.parent_app.search_query = query
             self.parent_app.filter_articles()
             if query:
-                self.parent_app.message = f"Found {len(self.parent_app.filtered_articles)} matching articles"
+                self.parent_app.message = (
+                    f"Found {len(self.parent_app.filtered_articles)} matching articles"
+                )
             else:
                 self.parent_app.message = "Search cleared"
             self.parent_app.refresh_after_filter()
@@ -837,29 +847,34 @@ class DateFilterScreen(ModalScreen):
         Binding("escape", "cancel", "Cancel"),
     ]
 
-    def __init__(self, parent_app: 'RSSReaderApp'):
+    def __init__(self, parent_app: "RSSReaderApp"):
         super().__init__()
         self.parent_app = parent_app
 
     def compose(self) -> ComposeResult:
-        current = f"Current: {self.parent_app.date_start or '...'} ~ {self.parent_app.date_end or '...'}"
+        current = (
+            f"Current: {self.parent_app.date_start or '...'} ~ {self.parent_app.date_end or '...'}"
+        )
 
         yield Container(
             Label("📅 Date Filter", classes="modal-title"),
             Label("Format: YYYY-MM-DD, leave empty to skip", classes="modal-hint"),
-            Label(f"Range: {self.parent_app.min_date or 'N/A'} ~ {self.parent_app.max_date or 'N/A'}", classes="modal-hint"),
+            Label(
+                f"Range: {self.parent_app.min_date or 'N/A'} ~ {self.parent_app.max_date or 'N/A'}",
+                classes="modal-hint",
+            ),
             Label(current, classes="modal-current"),
             Input(
                 placeholder=f"Start Date (default: {self.parent_app.min_date or 'N/A'})",
                 id="start-input",
-                value=self.parent_app.date_start
+                value=self.parent_app.date_start,
             ),
             Input(
                 placeholder=f"End Date (default: {self.parent_app.max_date or 'N/A'})",
                 id="end-input",
-                value=self.parent_app.date_end
+                value=self.parent_app.date_end,
             ),
-            classes="modal-container"
+            classes="modal-container",
         )
 
     def on_mount(self):
@@ -883,7 +898,9 @@ class DateFilterScreen(ModalScreen):
             self.parent_app.date_start = start
             self.parent_app.date_end = end
             self.parent_app.filter_articles()
-            self.parent_app.message = f"Date filter applied, found {len(self.parent_app.filtered_articles)} articles"
+            self.parent_app.message = (
+                f"Date filter applied, found {len(self.parent_app.filtered_articles)} articles"
+            )
             self.parent_app.refresh_after_filter()
             self.app.pop_screen()
 

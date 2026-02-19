@@ -1,14 +1,13 @@
 """Configuration management for RSSTools."""
 
-import os
 import json
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
 from pydantic import ValidationError
 
-from .models import Config, LLMConfig, DownloadConfig, SummarizeConfig
-
+from .models import Config
 
 DEFAULT_CONFIG = Config()
 
@@ -22,10 +21,10 @@ def load_config() -> Config:
     config_path = Path.home() / ".rsstools" / "config.json"
     if config_path.exists():
         try:
-            with open(config_path, 'r', encoding='utf-8') as f:
+            with open(config_path, encoding="utf-8") as f:
                 user_cfg = json.load(f)
             config_data = _merge_config(config_data, user_cfg)
-        except (json.JSONDecodeError, IOError) as e:
+        except (OSError, json.JSONDecodeError):
             pass
 
     _apply_env_overrides(config_data)
@@ -38,7 +37,9 @@ def load_config() -> Config:
     elif "base_dir" in config_data:
         config_data["opml_path"] = os.path.join(config_data["base_dir"], "subscriptions.opml")
     else:
-        config_data["opml_path"] = os.path.join(os.path.expanduser(DEFAULT_CONFIG.base_dir), "subscriptions.opml")
+        config_data["opml_path"] = os.path.join(
+            os.path.expanduser(DEFAULT_CONFIG.base_dir), "subscriptions.opml"
+        )
 
     try:
         return Config(**config_data)

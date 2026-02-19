@@ -11,13 +11,11 @@ from .context import get_correlation_id
 
 
 def add_correlation_id(
-    logger: logging.Logger,
-    method_name: str,
-    event_dict: dict[str, Any]
+    logger: logging.Logger, method_name: str, event_dict: dict[str, Any]
 ) -> dict[str, Any]:
     cid = get_correlation_id()
     if cid:
-        event_dict['correlation_id'] = cid
+        event_dict["correlation_id"] = cid
     return event_dict
 
 
@@ -43,7 +41,8 @@ def setup_logging(level: str = "INFO", json_output: bool = False) -> None:
         renderer = structlog.dev.ConsoleRenderer(colors=True)
 
     structlog.configure(
-        processors=shared_processors + [
+        processors=shared_processors
+        + [
             structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
         ],
         logger_factory=structlog.stdlib.LoggerFactory(),

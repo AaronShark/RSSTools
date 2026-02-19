@@ -1,15 +1,16 @@
 """Tests for rsstools/utils.py."""
 
 import os
+
 from rsstools.utils import (
+    extract_content,
+    extract_front_matter,
+    parse_date_prefix,
+    parse_opml,
+    rebuild_front_matter,
+    safe_dirname,
     yaml_escape,
     yaml_unescape,
-    parse_opml,
-    extract_front_matter,
-    extract_content,
-    safe_dirname,
-    parse_date_prefix,
-    rebuild_front_matter,
 )
 
 
@@ -77,7 +78,7 @@ class TestYamlUnescape:
         assert yaml_unescape(r"a\\b\\c") == r"a\b\c"
 
     def test_unescapes_all_special_chars(self):
-        assert yaml_unescape(r'a\"b\nc\rd\\e\tf') == 'a"b\nc\rd\\e\tf'
+        assert yaml_unescape(r"a\"b\nc\rd\\e\tf") == 'a"b\nc\rd\\e\tf'
 
 
 class TestYamlRoundTrip:
@@ -157,13 +158,13 @@ class TestExtractFrontMatter:
     """Tests for extract_front_matter()."""
 
     def test_extracts_simple_front_matter(self):
-        text = '---\ntitle: Test Title\n---\nBody content here'
+        text = "---\ntitle: Test Title\n---\nBody content here"
         meta, body = extract_front_matter(text)
         assert meta == {"title": "Test Title"}
         assert body == "Body content here"
 
     def test_extracts_multiple_fields(self):
-        text = '---\ntitle: Title\nauthor: Author\ndate: 2024-01-01\n---\nBody'
+        text = "---\ntitle: Title\nauthor: Author\ndate: 2024-01-01\n---\nBody"
         meta, body = extract_front_matter(text)
         assert meta["title"] == "Title"
         assert meta["author"] == "Author"

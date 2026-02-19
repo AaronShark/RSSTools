@@ -1,26 +1,21 @@
 """Article downloader for RSS feeds"""
 
-import os
-import re
 import asyncio
 import hashlib
-from typing import Dict, List, Optional, Tuple
+import os
+import re
+from datetime import UTC
 
-import aiohttp
 import aiofiles
-import feedparser
+import aiohttp
 
-from .utils import (
-    safe_dirname, parse_date_prefix,
-    extract_content, yaml_escape, yaml_unescape
-)
 from .logging_config import get_logger
+from .utils import extract_content, parse_date_prefix, safe_dirname, yaml_escape
 
 logger = get_logger(__name__)
 
 
 class ArticleDownloader:
-
     def __init__(self, cfg: dict, index, llm=None, force: bool = False):
         self.cfg = cfg
         self.index = index
@@ -32,37 +27,38 @@ class ArticleDownloader:
         self.failed = 0
         self._dedup_lock = asyncio.Lock()
 
-    async def download_with_retry(self, session: aiohttp.ClientSession,
-                                  url: str, extra_headers: Optional[Dict] = None
-                                  ) -> Tuple[Optional[str], Optional[str], Dict]:
+    async def download_with_retry(
+        self, session: aiohttp.ClientSession, url: str, extra_headers: dict | None = None
+    ) -> tuple[str | None, str | None, dict]:
         """Returns (content, error, resp_headers).
         resp_headers contains 'etag' and 'last_modified' from 200 responses.
         Returns ('', None, {}) for 304 Not Modified.
         """
         dl = self.cfg["download"]
         timeout = aiohttp.ClientTimeout(total=dl["timeout"], connect=dl["connect_timeout"])
-        headers = {'User-Agent': dl["user_agent"]}
+        headers = {"User-Agent": dl["user_agent"]}
         if extra_headers:
             headers.update(extra_headers)
         last_error = None
         for attempt in range(dl["max_retries"]):
             try:
-                async with session.get(url, headers=headers, timeout=timeout,
-                                       max_redirects=dl["max_redirects"]) as resp:
+                async with session.get(
+                    url, headers=headers, timeout=timeout, max_redirects=dl["max_redirects"]
+                ) as resp:
                     if resp.status == 200:
                         raw = await resp.read()
                         rh = {
-                            'etag': resp.headers.get('ETag', ''),
-                            'last_modified': resp.headers.get('Last-Modified', ''),
+                            "etag": resp.headers.get("ETag", ""),
+                            "last_modified": resp.headers.get("Last-Modified", ""),
                         }
                         return self._decode(raw, resp), None, rh
                     elif resp.status == 304:
-                        return '', None, {}  # Not Modified
+                        return "", None, {}  # Not Modified
                     elif 400 <= resp.status < 500 and resp.status != 429:
                         return None, f"HTTP {resp.status}", {}
                     else:
                         last_error = f"HTTP {resp.status}"
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 last_error = "Timeout"
             except aiohttp.ClientConnectorError as e:
                 last_error = f"Connection: {e}"
@@ -75,36 +71,42 @@ class ArticleDownloader:
         return None, last_error, {}
 
     def _decode(self, content: bytes, resp) -> str:
-        ct = resp.headers.get('Content-Type', '')
-        m = re.search(r'charset=([^;\s]+)', ct, re.IGNORECASE)
+        ct = resp.headers.get("Content-Type", "")
+        m = re.search(r"charset=([^;\s]+)", ct, re.IGNORECASE)
         if m:
             try:
                 return content.decode(m.group(1))
             except (UnicodeDecodeError, LookupError):
                 pass
-        for enc in ['utf-8', 'iso-8859-1', 'cp1252', 'gbk', 'gb2312', 'big5']:
+        for enc in ["utf-8", "iso-8859-1", "cp1252", "gbk", "gb2312", "big5"]:
             try:
                 return content.decode(enc)
             except UnicodeDecodeError:
                 continue
-        return content.decode('utf-8', errors='replace')
+        return content.decode("utf-8", errors="replace")
 
-    async def download_articles(self, session: aiohttp.ClientSession,
-                                entries: List[Dict], source_name: str, feed_url: str):
+    async def download_articles(
+        self, session: aiohttp.ClientSession, entries: list[dict], source_name: str, feed_url: str
+    ):
         new_articles = []
         for entry in entries:
-            url = (entry.get('link') or entry.get('id', '')).strip()
-            if not url or not url.startswith(('http://', 'https://')):
+            url = (entry.get("link") or entry.get("id", "")).strip()
+            if not url or not url.startswith(("http://", "https://")):
                 continue
             if not self.force and self.index.is_downloaded(url):
                 continue
             if not self.force and self.index.should_skip_article(url):
                 continue
-            new_articles.append({
-                'url': url, 'title': entry.get('title', 'Unknown'),
-                'published': entry.get('published', ''), 'feed_url': feed_url,
-                'source_name': source_name, 'feed_content': entry.get('content', ''),
-            })
+            new_articles.append(
+                {
+                    "url": url,
+                    "title": entry.get("title", "Unknown"),
+                    "published": entry.get("published", ""),
+                    "feed_url": feed_url,
+                    "source_name": source_name,
+                    "feed_content": entry.get("content", ""),
+                }
+            )
         if not new_articles:
             return
         tag = source_name[:25]
@@ -116,22 +118,23 @@ class ArticleDownloader:
 
     async def _download_one(self, session, article, sem):
         async with sem:
-            url, title = article['url'], article['title']
-            source_name = article['source_name']
+            url, title = article["url"], article["title"]
+            source_name = article["source_name"]
             async with self._dedup_lock:
                 if not self.force and self.index.is_downloaded(url):
                     return
             try:
-                main_content, content_source = None, 'page'
+                main_content, content_source = None, "page"
                 content, error, _ = await self.download_with_retry(session, url)
                 if content:
                     main_content = extract_content(content, url)
-                if not main_content and article.get('feed_content'):
+                if not main_content and article.get("feed_content"):
                     from bs4 import BeautifulSoup
-                    soup = BeautifulSoup(article['feed_content'], 'html.parser')
+
+                    soup = BeautifulSoup(article["feed_content"], "html.parser")
                     if len(soup.get_text(strip=True)) > 50:
-                        main_content = article['feed_content']
-                        content_source = 'feed'
+                        main_content = article["feed_content"]
+                        content_source = "feed"
                 if not main_content:
                     msg = error or "Cannot extract content"
                     self.failed += 1
@@ -140,8 +143,8 @@ class ArticleDownloader:
 
                 source_dir = os.path.join(self.articles_dir, safe_dirname(source_name))
                 os.makedirs(source_dir, exist_ok=True)
-                date_prefix = parse_date_prefix(article['published'])
-                safe_title = re.sub(r'[-\s]+', '-', re.sub(r'[^\w\s-]', '', title).strip())
+                date_prefix = parse_date_prefix(article["published"])
+                safe_title = re.sub(r"[-\s]+", "-", re.sub(r"[^\w\s-]", "", title).strip())
                 url_hash = hashlib.sha256(url.encode()).hexdigest()[:8]
                 filename = f"{date_prefix}_{safe_title[:50]}_{url_hash}.md"
                 filepath = os.path.join(source_dir, filename)
@@ -151,8 +154,9 @@ class ArticleDownloader:
                 if self.llm and self.llm.enabled:
                     summary, _ = await self.llm.summarize(session, title, main_content)
 
-                from datetime import datetime, timezone
-                now = datetime.now(timezone.utc).isoformat()
+                from datetime import datetime
+
+                now = datetime.now(UTC).isoformat()
                 summary_line = ""
                 if summary:
                     summary_line = f"summary: {yaml_escape(summary)}\n"
@@ -165,9 +169,9 @@ class ArticleDownloader:
                     f"{summary_line}---\n\n{main_content}\n"
                 )
                 try:
-                    async with aiofiles.open(filepath, 'w', encoding='utf-8') as f:
+                    async with aiofiles.open(filepath, "w", encoding="utf-8") as f:
                         await f.write(text)
-                except IOError as e:
+                except OSError as e:
                     logger.error("write_failed", filepath=filepath, error=str(e))
                     self.index.record_article_failure(url, f"Write error: {e}")
                     self.failed += 1
@@ -175,13 +179,16 @@ class ArticleDownloader:
 
                 async with self._dedup_lock:
                     meta = {
-                        'title': title, 'source_name': source_name,
-                        'feed_url': article['feed_url'], 'published': article['published'],
-                        'downloaded': now, 'filepath': rel_path,
-                        'content_source': content_source,
+                        "title": title,
+                        "source_name": source_name,
+                        "feed_url": article["feed_url"],
+                        "published": article["published"],
+                        "downloaded": now,
+                        "filepath": rel_path,
+                        "content_source": content_source,
                     }
                     if summary:
-                        meta['summary'] = summary
+                        meta["summary"] = summary
                     self.index.add_article(url, meta)
                     self.index.clear_article_failure(url)
                 self.downloaded += 1

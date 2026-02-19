@@ -1,9 +1,8 @@
 """LLM cache for storing results"""
 
-import os
 import hashlib
-from datetime import datetime, timezone
-from typing import Optional, Tuple
+import os
+from datetime import UTC, datetime
 
 
 class LLMCache:
@@ -17,23 +16,23 @@ class LLMCache:
         h = hashlib.sha256(f"{model}|{system}|{user}".encode()).hexdigest()
         return h
 
-    def get(self, model: str, system: str, user: str) -> Optional[str]:
+    def get(self, model: str, system: str, user: str) -> str | None:
         path = os.path.join(self.cache_dir, self._key(model, system, user))
         if os.path.exists(path):
-            with open(path, 'r', encoding='utf-8') as f:
+            with open(path, encoding="utf-8") as f:
                 return f.read()
         return None
 
     def put(self, model: str, system: str, user: str, result: str):
         path = os.path.join(self.cache_dir, self._key(model, system, user))
-        with open(path, 'w', encoding='utf-8') as f:
+        with open(path, "w", encoding="utf-8") as f:
             f.write(result)
 
-    def clean(self, max_age_days: int = 30, dry_run: bool = False) -> Tuple[int, int]:
+    def clean(self, max_age_days: int = 30, dry_run: bool = False) -> tuple[int, int]:
         """Remove cache files older than max_age_days. Returns (files_removed, bytes_freed)."""
         if not os.path.exists(self.cache_dir):
             return 0, 0
-        cutoff = datetime.now(timezone.utc).timestamp() - (max_age_days * 86400)
+        cutoff = datetime.now(UTC).timestamp() - (max_age_days * 86400)
         removed = 0
         size_freed = 0
         for f in os.listdir(self.cache_dir):

@@ -1,15 +1,15 @@
 """Tests for configuration validation with pydantic."""
 
-import os
 import json
+import os
 import tempfile
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
-from rsstools.models import Config, LLMConfig, DownloadConfig, SummarizeConfig
-from rsstools.config import load_config, _merge_config, _format_validation_errors
+from rsstools.config import _format_validation_errors, _merge_config, load_config
+from rsstools.models import Config, DownloadConfig, LLMConfig, SummarizeConfig
 
 
 class TestLLMConfig:
@@ -255,10 +255,7 @@ class TestLoadConfig:
     def test_json_config_file(self, monkeypatch, temp_dir):
         config_content = {
             "base_dir": "/custom/base",
-            "llm": {
-                "temperature": 0.8,
-                "max_tokens": 4096
-            }
+            "llm": {"temperature": 0.8, "max_tokens": 4096},
         }
 
         with tempfile.TemporaryDirectory() as tmpdir:
