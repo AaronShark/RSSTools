@@ -7,7 +7,7 @@ import time
 import aiohttp
 
 from .cache import LLMCache
-from .circuit_breaker import CircuitBreaker, CircuitState
+from .circuit_breaker import CircuitBreaker
 from .content import ContentPreprocessor
 from .logging_config import get_logger
 from .lru_cache import AsyncSlidingWindowRateLimiter

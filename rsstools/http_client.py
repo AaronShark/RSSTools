@@ -1,7 +1,6 @@
 """Shared HTTP client with connection pooling for RSSTools."""
 
 import asyncio
-from typing import Optional
 
 import aiohttp
 
@@ -26,7 +25,7 @@ class HTTPClient:
     self._connect_timeout = connect_timeout
     self._total_timeout = total_timeout
     self._force_close = force_close
-    self._session: Optional[aiohttp.ClientSession] = None
+    self._session: aiohttp.ClientSession | None = None
     self._lock = asyncio.Lock()
 
   @property

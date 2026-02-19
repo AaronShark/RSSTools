@@ -1,9 +1,10 @@
 """Circuit breaker pattern for resilience."""
 
 import asyncio
-from datetime import datetime, timedelta
+from collections.abc import Awaitable, Callable
+from datetime import datetime
 from enum import Enum
-from typing import Callable, Optional, TypeVar
+from typing import TypeVar
 
 T = TypeVar("T")
 
@@ -33,7 +34,7 @@ class CircuitBreaker:
         self._state = CircuitState.CLOSED
         self._failure_count = 0
         self._success_count = 0
-        self._last_failure_time: Optional[datetime] = None
+        self._last_failure_time: datetime | None = None
         self._lock = asyncio.Lock()
 
     @property
@@ -82,7 +83,7 @@ class CircuitBreaker:
             elif self._failure_count >= self.failure_threshold:
                 self._state = CircuitState.OPEN
 
-    async def call(self, func: Callable[..., T]) -> T:
+    async def call(self, func: Callable[[], Awaitable[T]]) -> T:
         if not await self.can_execute():
             raise CircuitBreakerOpenError("Circuit breaker is open")
 

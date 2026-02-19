@@ -1,7 +1,7 @@
 """Feed repository for feed and failure tracking operations."""
 
 from datetime import UTC, datetime
-from typing import Any, Optional
+from typing import Any
 
 from ..database import Database
 from ..logging_config import get_logger
@@ -22,7 +22,7 @@ class FeedRepository:
   async def clear_failure(self, url: str) -> bool:
     return await self._db.clear_feed_failure(url)
 
-  async def get_failure(self, url: str) -> Optional[dict[str, Any]]:
+  async def get_failure(self, url: str) -> dict[str, Any] | None:
     return await self._db.get_feed_failure(url)
 
   async def should_skip(self, url: str, max_retries: int, retry_after_hours: int = 24) -> bool:

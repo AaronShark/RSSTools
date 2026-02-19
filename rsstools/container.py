@@ -1,7 +1,7 @@
 """Dependency injection container for RSSTools."""
 
 import os
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import aiohttp
 
@@ -23,13 +23,13 @@ class Container:
 
   def __init__(self, config: Any):
     self.config = config
-    self._db: Optional[Database] = None
-    self._article_repo: Optional[ArticleRepository] = None
-    self._feed_repo: Optional[FeedRepository] = None
-    self._cache_repo: Optional[CacheRepository] = None
-    self._llm_cache: Optional[LLMCache] = None
-    self._llm_client: Optional[LLMClient] = None
-    self._http_client: Optional[HTTPClient] = None
+    self._db: Database | None = None
+    self._article_repo: ArticleRepository | None = None
+    self._feed_repo: FeedRepository | None = None
+    self._cache_repo: CacheRepository | None = None
+    self._llm_cache: LLMCache | None = None
+    self._llm_client: LLMClient | None = None
+    self._http_client: HTTPClient | None = None
 
   @property
   def db(self) -> Database:

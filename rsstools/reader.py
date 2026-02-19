@@ -1,6 +1,5 @@
 """TUI Reader for RSS articles using Textual"""
 
-import asyncio
 import json
 import os
 import re
@@ -8,8 +7,6 @@ import warnings
 import webbrowser
 from datetime import datetime
 from typing import Literal
-
-import aiosqlite
 
 warnings.filterwarnings("ignore", message=".*tzname.*identified but not understood.*")
 

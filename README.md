@@ -4,6 +4,45 @@
 
 RSSTools is a powerful RSS article management and knowledge base tool that integrates article downloading, AI summarization, and a TUI reader. It supports automatic article fetching from RSS sources, LLM-powered summarization, article classification and scoring, and provides a beautiful terminal interface for browsing and searching.
 
+**v3.0 Highlights:**
+- **SQLite Backend**: Fast, reliable storage with FTS5 full-text search
+- **Repository Pattern**: Clean separation of data access logic
+- **Dependency Injection**: Modular, testable architecture
+- **Circuit Breaker**: Resilient API calls with automatic recovery
+- **Rate Limiting**: Per-domain request throttling
+
+---
+
+## Architecture Overview
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        CLI Layer                             │
+│  rsstools.py → cli.py (download, summarize, reader, etc.)   │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    Container (DI)                            │
+│  Manages: Database, Repositories, HTTPClient, LLMClient      │
+└─────────────────────────────────────────────────────────────┘
+                              │
+          ┌───────────────────┼───────────────────┐
+          ▼                   ▼                   ▼
+┌─────────────────┐ ┌─────────────────┐ ┌─────────────────┐
+│ ArticleRepo     │ │ FeedRepo        │ │ CacheRepo       │
+│ (CRUD + FTS5)   │ │ (failures)      │ │ (ETags)         │
+└─────────────────┘ └─────────────────┘ └─────────────────┘
+          │                   │                   │
+          └───────────────────┼───────────────────┘
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                 SQLite Database (rsstools.db)                │
+│  Tables: articles, feed_failures, article_failures,          │
+│          summary_failures, feed_etags + FTS5 virtual table   │
+└─────────────────────────────────────────────────────────────┘
+```
+
 ---
 
 ## Features
@@ -64,16 +103,34 @@ RSSTools is a powerful RSS article management and knowledge base tool that integ
 RSSTools/
 ├── rsstools/                 # Main package
 │   ├── __init__.py          # Package exports
-│   ├── config.py            # Configuration management
+│   ├── config.py            # Configuration management (Pydantic)
+│   ├── models.py            # Pydantic config models
+│   ├── container.py         # Dependency injection container
+│   ├── database.py          # SQLite + FTS5 backend
 │   ├── cache.py             # LLM cache
 │   ├── content.py           # Content preprocessing
-│   ├── llm.py               # LLM client
-│   ├── index.py             # Article index manager
+│   ├── llm.py               # LLM client with circuit breaker
+│   ├── http_client.py       # Shared HTTP client with pooling
+│   ├── circuit_breaker.py   # Circuit breaker pattern
+│   ├── lru_cache.py         # In-memory LRU cache
 │   ├── downloader.py        # RSS downloader
 │   ├── reader.py            # TUI reader
 │   ├── cli.py               # CLI command implementations
+│   ├── migrate.py           # Migration tool (v2 → v3)
+│   ├── shutdown.py          # Graceful shutdown handling
+│   ├── metrics.py           # Metrics collection
+│   ├── context.py           # Request context (correlation IDs)
+│   ├── logging_config.py    # Structured logging
 │   ├── utils.py             # Utility functions
+│   ├── url_validator.py     # URL validation (SSRF protection)
+│   ├── tokens.py            # Token counting
 │   └── rsstools.py          # CLI entry point
+│   └── repositories/        # Repository layer
+│       ├── __init__.py
+│       ├── article_repo.py  # Article CRUD + FTS5 search
+│       ├── feed_repo.py     # Feed failure tracking
+│       └── cache_repo.py    # ETag cache management
+├── tests/                   # Test suite
 ├── run.sh                   # Startup script
 ├── requirements.txt         # Dependencies
 └── README.md                # User manual
@@ -81,70 +138,87 @@ RSSTools/
 
 ### Core Modules
 
-#### 1. Config (`config.py`)
-- Default configuration definitions
-- Load user config from `~/.rsstools/config.json`
-- Environment variable override support
-- Config merging logic
+#### 1. Container (`container.py`)
+- Dependency injection container
+- Manages: Database, Repositories, HTTPClient, LLMClient
+- Async context manager for resource lifecycle
+- Lazy initialization of components
 
-#### 2. LLM (`llm.py`)
+#### 2. Database (`database.py`)
+- Async SQLite with aiosqlite
+- FTS5 virtual table for full-text search
+- BM25 ranking for search relevance
+- Schema versioning for migrations
+
+#### 3. Repositories (`repositories/`)
+- **ArticleRepository**: CRUD operations, FTS5 search, statistics
+- **FeedRepository**: Feed failure tracking and recovery
+- **CacheRepository**: ETag/Last-Modified caching
+
+#### 4. LLM (`llm.py`)
 - Multi-model fallback mechanism
+- Circuit breaker for resilience
+- Rate limiting per model
 - Request retry (exponential backoff)
 - Local cache (based on SHA256)
-- Serialized execution (avoid rate limiting)
 
-#### 3. Cache (`cache.py`)
-- File system cache
-- Prompt hash-based keys
-- Expiration time support
-- Batch cleanup functionality
+#### 5. HTTP Client (`http_client.py`)
+- Shared connection pooling
+- Per-host connection limits
+- Configurable timeouts
+- Force close option for problematic hosts
 
-#### 4. Index (`index.py`)
-- Article metadata management
-- Deduplication check
-- Failure records
-- ETag management
-- Statistics data
+#### 6. Circuit Breaker (`circuit_breaker.py`)
+- Three states: CLOSED, OPEN, HALF_OPEN
+- Configurable failure threshold
+- Automatic recovery after timeout
+- Thread-safe async implementation
 
-#### 5. Downloader (`downloader.py`)
-- Async HTTP client
-- Content extraction (Trafilatura/BeautifulSoup)
-- Concurrency control (semaphore)
-- Deduplication lock
-
-#### 6. Reader (`reader.py`)
+#### 7. Reader (`reader.py`)
 - Textual TUI framework
-- Search and filtering
-- Pagination navigation
+- FTS5 full-text search
+- Multiple sort modes (date, score, source, BM25)
+- Category filtering
+- Export functionality
 - Nord theme
-
-#### 7. Utils (`utils.py`)
-- YAML escape/unescape
-- OPML parsing
-- Front matter handling
-- Content extraction
 
 ### Data Flow
 
 ```
 OPML File → FeedParser → RSS Entries
     ↓
-IndexManager (Deduplication check)
+Container (DI initialization)
     ↓
-ArticleDownloader (Async download)
+ArticleRepository (Deduplication check via SQLite)
+    ↓
+ArticleDownloader (Async download with HTTP pooling)
     ↓
 Content Extractor (Body extraction)
     ↓
-LLMClient (Summary + Scoring)
+LLMClient (Summary + Scoring with circuit breaker)
     ↓
-Markdown File + Index.json
+Markdown File + SQLite Database
     ↓
-TUI Reader (Browsing & Searching)
+TUI Reader (Browsing & FTS5 Searching)
 ```
+
+### Storage
+
+**v3.0 uses SQLite instead of index.json:**
+- **Database**: `{base_dir}/rsstools.db`
+- **Articles**: Markdown files in `articles/` directory
+- **LLM Cache**: `{base_dir}/.llm_cache/` directory
+
+Benefits:
+- Fast FTS5 full-text search
+- Atomic transactions
+- Better concurrency
+- Smaller memory footprint
 
 ### Dependencies
 
-- **aiohttp**: Async HTTP client
+- **aiosqlite**: Async SQLite operations
+- **aiohttp**: Async HTTP client with connection pooling
 - **aiofiles**: Async file operations
 - **feedparser**: RSS/Atom parsing
 - **beautifulsoup4**: HTML parsing
@@ -152,6 +226,8 @@ TUI Reader (Browsing & Searching)
 - **rich**: Terminal beautification
 - **textual**: TUI framework
 - **python-dateutil**: Date parsing
+- **pydantic**: Configuration validation
+- **python-dotenv**: Environment variable loading
 
 ---
 
@@ -207,13 +283,19 @@ Default config file: `~/.rsstools/config.json`
   "llm": {
     "api_key": "your-api-key",
     "host": "https://api.z.ai/api/coding/paas/v4",
-    "models": "glm-5,glm-4.7",
+    "models": ["glm-5", "glm-4.7"],
     "max_tokens": 2048,
     "temperature": 0.3,
     "max_content_chars": 10000,
+    "max_content_tokens": 4000,
+    "token_counting_model": "gpt-4",
     "request_delay": 0.5,
     "max_retries": 5,
     "timeout": 60,
+    "circuit_breaker_failure_threshold": 5,
+    "circuit_breaker_recovery_timeout": 60.0,
+    "rate_limit_requests_per_minute": {},
+    "use_content_only_cache_key": false,
     "system_prompt": "You are a helpful assistant that summarizes articles concisely.",
     "user_prompt": "Summarize this article in 2-3 sentences, in the same language as the article.\n\nTitle: {title}\n\n{content}"
   },
@@ -226,12 +308,29 @@ Default config file: `~/.rsstools/config.json`
     "concurrent_feeds": 3,
     "max_redirects": 5,
     "etag_max_age_days": 30,
+    "rate_limit_per_domain": {},
+    "ssrf_protection_enabled": true,
+    "content_sanitization_enabled": true,
     "user_agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
   },
   "summarize": {
     "save_every": 20
   }
 }
+```
+
+#### New v3.0 Configuration Options
+
+| Option | Description | Default |
+|--------|-------------|---------|
+| `llm.circuit_breaker_failure_threshold` | Failures before circuit opens | 5 |
+| `llm.circuit_breaker_recovery_timeout` | Seconds before retry attempt | 60.0 |
+| `llm.rate_limit_requests_per_minute` | Per-model rate limits | {} |
+| `llm.max_content_tokens` | Max tokens for content | 4000 |
+| `llm.token_counting_model` | Model for token counting | "gpt-4" |
+| `download.rate_limit_per_domain` | Per-domain request limits | {} |
+| `download.ssrf_protection_enabled` | Block private IP addresses | true |
+| `download.content_sanitization_enabled` | Sanitize HTML content | true |
 ```
 
 #### Environment Variables
@@ -278,8 +377,8 @@ export RSSKB_OPML_PATH="~/custom/subscriptions.opml"
 **Description**:
 - Use LLM to batch generate summaries (10 articles at a time)
 - Automatically perform scoring and classification
-- Save index every 20 articles processed
 - Results cached in `.llm_cache/` directory
+- Circuit breaker protects against API failures
 
 #### 3. View Statistics
 
@@ -347,15 +446,55 @@ export RSSKB_OPML_PATH="~/custom/subscriptions.opml"
 ./run.sh clean-cache --days 30 --dry-run
 ```
 
-#### 7. TUI Reader
+#### 7. Health Check (NEW in v3.0)
 
 ```bash
-# Use default path (base_dir/index.json)
-./run.sh reader
-
-# Specify custom index file
-./run.sh reader ~/custom/index.json
+./run.sh health
 ```
+
+**Description**:
+- Check database connectivity
+- Verify article data integrity
+- Returns JSON health status
+- Exit code 0 = healthy, 1 = unhealthy
+
+**Output Example**:
+```json
+{
+  "status": "healthy",
+  "checks": {
+    "database": { "status": "ok", "articles": 2299 },
+    "articles_exist": { "status": "ok", "count": 2299 }
+  }
+}
+```
+
+#### 8. Migrate Data (NEW in v3.0)
+
+```bash
+# Migrate from index.json to SQLite
+./run.sh migrate
+
+# Preview migration without making changes
+./run.sh migrate --dry-run
+
+# Verify migration integrity
+./run.sh migrate --verify
+```
+
+**Description**:
+- Migrate data from v2 `index.json` to v3 SQLite database
+- Handles: articles, feed failures, article failures, summary failures, ETags
+- See [MIGRATION.md](./MIGRATION.md) for detailed instructions
+
+#### 9. TUI Reader
+
+```bash
+# Use default path (base_dir/rsstools.db)
+./run.sh reader
+```
+
+**Note**: v3.0 uses SQLite database (`rsstools.db`) instead of `index.json`.
 
 **TUI Interface Keyboard Shortcuts**:
 
@@ -363,6 +502,9 @@ export RSSKB_OPML_PATH="~/custom/subscriptions.opml"
 |-------|-----------------------|
 | `s`   | Open search box       |
 | `d`   | Open date filter      |
+| `o`   | Cycle sort mode       |
+| `g`   | Category filter       |
+| `e`   | Export articles       |
 | `c`   | Clear search filter   |
 | `x`   | Clear date filter     |
 | `r`   | Reset all filters    |
@@ -374,6 +516,12 @@ export RSSKB_OPML_PATH="~/custom/subscriptions.opml"
 | `Enter` | Open current article in browser |
 | `q`   | Quit                  |
 | `Esc`  | Close help palette/command palette |
+
+**Sort Modes** (press `o` to cycle):
+- **Date**: Sort by publication date (newest first)
+- **Score**: Sort by relevance > quality > timeliness
+- **Source**: Sort alphabetically by source name
+- **BM25**: Sort by search relevance (FTS5)
 
 **Article Display**:
 
@@ -608,6 +756,23 @@ Issues and Pull Requests are welcome!
 ---
 
 ## Changelog
+
+### v3.0.0 (2026-02-19)
+- **SQLite Backend**: Replaced index.json with SQLite database
+- **FTS5 Full-Text Search**: BM25-ranked search across all article content
+- **Repository Pattern**: Clean separation of data access logic
+- **Dependency Injection**: Modular Container for component management
+- **Circuit Breaker**: Resilient LLM API calls with automatic recovery
+- **Rate Limiting**: Per-domain and per-model request throttling
+- **SSRF Protection**: Block requests to private IP addresses
+- **Health Check**: New `health` command for monitoring
+- **Migration Tool**: Seamless migration from v2 index.json
+- **Export Feature**: Export filtered articles to JSON
+- **Category Filter**: Filter articles by category in TUI
+- **Sort Modes**: Multiple sort options (date, score, source, BM25)
+
+**Migration Guide**: See [MIGRATION.md](./MIGRATION.md)
+**Architecture**: See [ARCHITECTURE.md](./ARCHITECTURE.md)
 
 ### v2.0.0 (2026-02-18)
 - Modular refactoring with clean architecture

@@ -2,8 +2,8 @@
 
 import asyncio
 import signal
+from collections.abc import AsyncIterator, Callable
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Callable, Optional
 
 from .logging_config import get_logger
 
@@ -23,7 +23,7 @@ class ShutdownManager:
     self._shutdown_event = asyncio.Event()
     self._in_flight_zero = asyncio.Event()
     self._in_flight_zero.set()
-    self._loop: Optional[asyncio.AbstractEventLoop] = None
+    self._loop: asyncio.AbstractEventLoop | None = None
 
   @property
   def is_shutting_down(self) -> bool:
@@ -47,12 +47,14 @@ class ShutdownManager:
           self._in_flight = 0
           self._in_flight_zero.set()
 
-  def setup_signal_handlers(self, loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
+  def setup_signal_handlers(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
     self._loop = loop or asyncio.get_running_loop()
 
     for sig in (signal.SIGTERM, signal.SIGINT):
       try:
-        self._loop.add_signal_handler(sig, lambda s=sig: self._signal_handler(s))
+        self._loop.add_signal_handler(
+          sig, lambda s=sig: self._signal_handler(s)  # type: ignore[misc]
+        )
         logger.debug("signal_handler_registered", signal=sig.name)
       except NotImplementedError:
         logger.debug("signal_handler_not_supported", signal=sig.name)

@@ -15,7 +15,6 @@ Unified CLI for RSS article management:
 
 import argparse
 import asyncio
-import os
 import sys
 
 from rsstools.cli import (
@@ -24,11 +23,11 @@ from rsstools.cli import (
     cmd_download,
     cmd_failed,
     cmd_health,
-    cmd_migrate,
     cmd_stats,
     cmd_summarize,
 )
 from rsstools.config import load_config
+from rsstools.migrate import cmd_migrate
 from rsstools.reader import run_reader
 
 

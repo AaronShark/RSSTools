@@ -1,10 +1,9 @@
 """Async SQLite database backend with FTS5 full-text search."""
 
 import json
-import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 import aiosqlite
 
@@ -20,7 +19,7 @@ class Database:
 
     def __init__(self, db_path: str):
         self.db_path = db_path
-        self._conn: Optional[aiosqlite.Connection] = None
+        self._conn: aiosqlite.Connection | None = None
 
     async def connect(self) -> None:
         """Connect to database and create tables if they don't exist."""
@@ -110,7 +109,7 @@ class Database:
         logger.debug("article_added", url=article["url"], id=lastrowid)
         return lastrowid
 
-    async def get_article(self, url: str) -> Optional[dict[str, Any]]:
+    async def get_article(self, url: str) -> dict[str, Any] | None:
         """Get article by URL."""
         cursor = await self._execute("SELECT * FROM articles WHERE url = ?", (url,))
         row = await cursor.fetchone()
@@ -156,10 +155,10 @@ class Database:
         limit: int = 50,
         offset: int = 0,
         order_by: OrderBy = "relevance",
-        category: Optional[str] = None,
-        source: Optional[str] = None,
-        date_start: Optional[str] = None,
-        date_end: Optional[str] = None,
+        category: str | None = None,
+        source: str | None = None,
+        date_start: str | None = None,
+        date_end: str | None = None,
     ) -> list[dict[str, Any]]:
         """Search articles using FTS5 full-text search with BM25 ranking."""
         where_clauses = ["articles_fts MATCH ?"]
@@ -226,7 +225,7 @@ class Database:
         )
         await self._get_conn().commit()
 
-    async def get_feed_failure(self, url: str) -> Optional[dict[str, Any]]:
+    async def get_feed_failure(self, url: str) -> dict[str, Any] | None:
         """Get feed failure info."""
         cursor = await self._execute("SELECT * FROM feed_failures WHERE url = ?", (url,))
         row = await cursor.fetchone()
@@ -251,7 +250,7 @@ class Database:
         )
         await self._get_conn().commit()
 
-    async def get_article_failure(self, url: str) -> Optional[dict[str, Any]]:
+    async def get_article_failure(self, url: str) -> dict[str, Any] | None:
         """Get article failure info."""
         cursor = await self._execute("SELECT * FROM article_failures WHERE url = ?", (url,))
         row = await cursor.fetchone()
@@ -272,7 +271,7 @@ class Database:
         )
         await self._get_conn().commit()
 
-    async def get_summary_failure(self, url: str) -> Optional[dict[str, Any]]:
+    async def get_summary_failure(self, url: str) -> dict[str, Any] | None:
         """Get summary failure info."""
         cursor = await self._execute("SELECT * FROM summary_failures WHERE url = ?", (url,))
         row = await cursor.fetchone()
@@ -287,7 +286,7 @@ class Database:
         )
         await self._get_conn().commit()
 
-    async def get_feed_etag(self, url: str) -> Optional[dict[str, Any]]:
+    async def get_feed_etag(self, url: str) -> dict[str, Any] | None:
         """Get stored feed ETag info."""
         cursor = await self._execute("SELECT * FROM feed_etags WHERE url = ?", (url,))
         row = await cursor.fetchone()

@@ -47,6 +47,7 @@ __all__ = [
 def __getattr__(name: str):
     if name == "IndexManager":
         import warnings
+
         from .index import IndexManager
         warnings.warn(
             "IndexManager is deprecated. Use ArticleRepository, FeedRepository, and CacheRepository instead.",

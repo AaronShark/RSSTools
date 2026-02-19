@@ -1,11 +1,12 @@
 """CLI commands for RSSTools"""
 
 import asyncio
+import json as json_module
 import os
 from html import escape as html_escape
+from typing import Any
 
 import aiofiles
-import aiohttp
 import feedparser
 from rich.console import Console
 from rich.panel import Panel
@@ -18,13 +19,10 @@ from rich.progress import (
 )
 from rich.table import Table
 
-import json as json_module
-
-from .context import set_correlation_id
 from .container import Container
+from .context import set_correlation_id
 from .downloader import ArticleDownloader
 from .logging_config import get_logger
-from .migrate import cmd_migrate
 from .shutdown import ShutdownManager
 from .utils import extract_front_matter, parse_opml, rebuild_front_matter
 
@@ -458,9 +456,8 @@ def cmd_clean_cache(cfg: dict, max_age_days: int = 30, dry_run: bool = False):
 
 async def cmd_health(cfg: dict) -> bool:
     """Check system health. Returns True if healthy."""
-    import sys
 
-    health_status = {
+    health_status: dict[str, Any] = {
         "status": "healthy",
         "checks": {},
     }

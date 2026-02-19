@@ -1,6 +1,6 @@
 """Article repository for article-related database operations."""
 
-from typing import Any, Literal, Optional
+from typing import Any, Literal
 
 from ..database import Database
 from ..logging_config import get_logger
@@ -21,7 +21,7 @@ class ArticleRepository:
     article_copy["url"] = url
     return await self._db.add_article(article_copy)
 
-  async def get(self, url: str) -> Optional[dict[str, Any]]:
+  async def get(self, url: str) -> dict[str, Any] | None:
     return await self._db.get_article(url)
 
   async def update(self, url: str, updates: dict[str, Any]) -> bool:
@@ -39,10 +39,10 @@ class ArticleRepository:
     limit: int = 50,
     offset: int = 0,
     order_by: OrderBy = "relevance",
-    category: Optional[str] = None,
-    source: Optional[str] = None,
-    date_start: Optional[str] = None,
-    date_end: Optional[str] = None,
+    category: str | None = None,
+    source: str | None = None,
+    date_start: str | None = None,
+    date_end: str | None = None,
   ) -> list[dict[str, Any]]:
     return await self._db.search_articles(
       query=query,
