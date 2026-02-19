@@ -72,6 +72,9 @@ class DownloadConfig(BaseModel):
         "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     )
+    rate_limit_per_domain: dict[str, int] = Field(default_factory=dict)
+    ssrf_protection_enabled: bool = True
+    content_sanitization_enabled: bool = True
 
     @field_validator("concurrent_downloads", "concurrent_feeds")
     @classmethod

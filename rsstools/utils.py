@@ -165,3 +165,56 @@ def extract_content(html: str, url: str) -> str | None:
     if body and body.get_text(strip=True):
         return str(body)
     return None
+
+
+def sanitize_html(html: str) -> str:
+    """Sanitize HTML content by removing potentially malicious elements.
+
+    Args:
+        html: HTML content to sanitize
+
+    Returns:
+        Sanitized HTML string
+    """
+    if not html:
+        return ""
+
+    soup = BeautifulSoup(html, "html.parser")
+
+    dangerous_tags = [
+        "script",
+        "style",
+        "iframe",
+        "object",
+        "embed",
+        "applet",
+        "meta",
+        "link",
+        "base",
+        "form",
+        "input",
+        "button",
+        "select",
+        "textarea",
+    ]
+    for tag in soup(dangerous_tags):
+        tag.decompose()
+
+    dangerous_attrs = ["onclick", "onerror", "onload", "onmouseover", "onfocus", "onblur",
+                       "onsubmit", "onchange", "ondblclick", "onkeydown", "onkeyup", "onkeypress",
+                       "onmousedown", "onmouseup", "onmousemove", "onmouseout", "oncontextmenu",
+                       "formaction", "xlink:href"]
+    for tag in soup.find_all(True):
+        attrs_to_remove = []
+        for attr in tag.attrs:
+            attr_lower = attr.lower()
+            if attr_lower.startswith("on") or attr_lower in dangerous_attrs:
+                attrs_to_remove.append(attr)
+            elif attr_lower in ("href", "src", "data", "action"):
+                value = tag.get(attr, "")
+                if isinstance(value, str) and value.lower().startswith(("javascript:", "vbscript:", "data:text/html")):
+                    attrs_to_remove.append(attr)
+        for attr in attrs_to_remove:
+            del tag[attr]
+
+    return str(soup)

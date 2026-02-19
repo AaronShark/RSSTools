@@ -4,7 +4,10 @@ import asyncio
 import hashlib
 import os
 import re
+import time
+from collections import defaultdict
 from datetime import UTC
+from urllib.parse import urlparse
 
 import aiofiles
 import aiohttp
@@ -12,9 +15,37 @@ import aiohttp
 from .logging_config import get_logger
 from .metrics import metrics
 from .repositories import ArticleRepository, FeedRepository
-from .utils import extract_content, parse_date_prefix, safe_dirname, yaml_escape
+from .url_validator import SSRFError, UrlValidator
+from .utils import extract_content, parse_date_prefix, safe_dirname, sanitize_html, yaml_escape
 
 logger = get_logger(__name__)
+
+
+class DomainRateLimiter:
+    """Per-domain rate limiting for downloads."""
+
+    def __init__(self, rate_limits: dict[str, int]):
+        self.rate_limits = rate_limits
+        self._last_request: dict[str, float] = defaultdict(float)
+        self._lock = asyncio.Lock()
+
+    async def acquire(self, domain: str) -> None:
+        """Wait if necessary to comply with rate limit for domain.
+
+        Args:
+            domain: Domain name to rate limit
+        """
+        rate = self.rate_limits.get(domain)
+        if not rate or rate <= 0:
+            return
+
+        async with self._lock:
+            now = time.monotonic()
+            min_interval = 1.0 / rate
+            elapsed = now - self._last_request[domain]
+            if elapsed < min_interval:
+                await asyncio.sleep(min_interval - elapsed)
+            self._last_request[domain] = time.monotonic()
 
 
 class ArticleDownloader:
@@ -36,6 +67,12 @@ class ArticleDownloader:
         self.downloaded = 0
         self.failed = 0
         self._dedup_lock = asyncio.Lock()
+
+        dl_cfg = cfg.get("download", {})
+        self.rate_limiter = DomainRateLimiter(dl_cfg.get("rate_limit_per_domain", {}))
+        self.url_validator = UrlValidator()
+        self.ssr_protection_enabled = dl_cfg.get("ssrf_protection_enabled", True)
+        self.content_sanitization_enabled = dl_cfg.get("content_sanitization_enabled", True)
 
     async def download_with_retry(
         self, session: aiohttp.ClientSession, url: str, extra_headers: dict | None = None
@@ -103,6 +140,12 @@ class ArticleDownloader:
             url = (entry.get("link") or entry.get("id", "")).strip()
             if not url or not url.startswith(("http://", "https://")):
                 continue
+            if self.ssr_protection_enabled:
+                try:
+                    self.url_validator.validate(url)
+                except SSRFError as e:
+                    logger.warning("ssrf_blocked", url=url, reason=str(e))
+                    continue
             if not self.force and await self.article_repo.exists(url):
                 continue
             if not self.force and await self.feed_repo.should_skip_article(url):
@@ -132,17 +175,26 @@ class ArticleDownloader:
             async with self._dedup_lock:
                 if not self.force and await self.article_repo.exists(url):
                     return
+
+            domain = urlparse(url).netloc
+            await self.rate_limiter.acquire(domain)
+
             try:
                 main_content, content_source = None, "page"
                 content, error, _ = await self.download_with_retry(session, url)
                 if content:
+                    if self.content_sanitization_enabled:
+                        content = sanitize_html(content)
                     main_content = extract_content(content, url)
                 if not main_content and article.get("feed_content"):
                     from bs4 import BeautifulSoup
 
-                    soup = BeautifulSoup(article["feed_content"], "html.parser")
+                    feed_content = article["feed_content"]
+                    if self.content_sanitization_enabled:
+                        feed_content = sanitize_html(feed_content)
+                    soup = BeautifulSoup(feed_content, "html.parser")
                     if len(soup.get_text(strip=True)) > 50:
-                        main_content = article["feed_content"]
+                        main_content = feed_content
                         content_source = "feed"
                 if not main_content:
                     msg = error or "Cannot extract content"

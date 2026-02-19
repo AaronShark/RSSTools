@@ -9,6 +9,7 @@ from rsstools.utils import (
     parse_opml,
     rebuild_front_matter,
     safe_dirname,
+    sanitize_html,
     yaml_escape,
     yaml_unescape,
 )
@@ -304,3 +305,106 @@ class TestParseDatePrefix:
     def test_returns_today_for_empty(self):
         result = parse_date_prefix("")
         assert len(result) == 10
+
+
+class TestSanitizeHtml:
+    """Tests for sanitize_html()."""
+
+    def test_removes_script_tags(self):
+        html = "<p>Hello</p><script>alert('xss')</script><p>World</p>"
+        result = sanitize_html(html)
+        assert "<script>" not in result
+        assert "alert" not in result
+
+    def test_removes_style_tags(self):
+        html = "<style>body { display: none; }</style><p>Content</p>"
+        result = sanitize_html(html)
+        assert "<style>" not in result
+
+    def test_removes_iframe_tags(self):
+        html = "<iframe src='evil.com'></iframe><p>Safe</p>"
+        result = sanitize_html(html)
+        assert "<iframe" not in result
+
+    def test_removes_onclick_attributes(self):
+        html = "<a onclick='alert(1)'>Click</a>"
+        result = sanitize_html(html)
+        assert "onclick" not in result
+
+    def test_removes_onerror_attributes(self):
+        html = "<img src='x' onerror='alert(1)'>"
+        result = sanitize_html(html)
+        assert "onerror" not in result
+
+    def test_removes_onload_attributes(self):
+        html = "<body onload='alert(1)'>Content</body>"
+        result = sanitize_html(html)
+        assert "onload" not in result
+
+    def test_removes_javascript_href(self):
+        html = "<a href='javascript:alert(1)'>Click</a>"
+        result = sanitize_html(html)
+        assert "javascript:" not in result
+
+    def test_removes_vbscript_href(self):
+        html = "<a href='vbscript:alert(1)'>Click</a>"
+        result = sanitize_html(html)
+        assert "vbscript:" not in result
+
+    def test_removes_data_text_html_href(self):
+        html = "<a href='data:text/html,<script>alert(1)</script>'>Click</a>"
+        result = sanitize_html(html)
+        assert "data:text/html" not in result
+
+    def test_removes_form_tags(self):
+        html = "<form action='evil.com'><input type='text'></form><p>Content</p>"
+        result = sanitize_html(html)
+        assert "<form" not in result
+        assert "<input" not in result
+
+    def test_removes_object_and_embed(self):
+        html = "<object data='evil.swf'></object><embed src='evil.swf'><p>Safe</p>"
+        result = sanitize_html(html)
+        assert "<object" not in result
+        assert "<embed" not in result
+
+    def test_preserves_safe_html(self):
+        html = "<div><p>Hello <strong>World</strong></p><a href='https://example.com'>Link</a></div>"
+        result = sanitize_html(html)
+        assert "<div>" in result
+        assert "<p>" in result
+        assert "<strong>" in result
+        assert "https://example.com" in result
+
+    def test_handles_empty_string(self):
+        assert sanitize_html("") == ""
+
+    def test_handles_none(self):
+        assert sanitize_html(None) == ""
+
+    def test_removes_meta_tags(self):
+        html = "<meta http-equiv='refresh' content='0;url=evil.com'><p>Content</p>"
+        result = sanitize_html(html)
+        assert "<meta" not in result
+
+    def test_removes_base_tags(self):
+        html = "<base href='evil.com'><p>Content</p>"
+        result = sanitize_html(html)
+        assert "<base" not in result
+
+    def test_removes_formaction_attribute(self):
+        html = "<button formaction='evil.com'>Click</button>"
+        result = sanitize_html(html)
+        assert "formaction" not in result
+
+    def test_removes_all_event_handlers(self):
+        event_handlers = [
+            "onmouseover", "onfocus", "onblur", "onsubmit", "onchange",
+            "ondblclick", "onkeydown", "onkeyup", "onmousedown", "onmouseup",
+            "oncontextmenu"
+        ]
+        for handler in event_handlers:
+            html = f"<div {handler}='alert(1)'>Test</div>"
+            result = sanitize_html(html)
+            assert handler not in result, f"{handler} not removed"
+
