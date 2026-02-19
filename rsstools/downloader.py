@@ -10,6 +10,7 @@ import aiofiles
 import aiohttp
 
 from .logging_config import get_logger
+from .metrics import metrics
 from .repositories import ArticleRepository, FeedRepository
 from .utils import extract_content, parse_date_prefix, safe_dirname, yaml_escape
 
@@ -200,6 +201,9 @@ class ArticleDownloader:
                     await self.article_repo.add(url, meta)
                     await self.feed_repo.clear_article_failure(url)
                 self.downloaded += 1
+                metrics.record_download()
+                if summary:
+                    metrics.record_summarize()
             except Exception as e:
                 tag = source_name[:25]
                 logger.error("download_failed", source=tag, url=url, error=str(e))

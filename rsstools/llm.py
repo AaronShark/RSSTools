@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import time
 
 import aiohttp
 
@@ -10,6 +11,7 @@ from .circuit_breaker import CircuitBreaker, CircuitState
 from .content import ContentPreprocessor
 from .logging_config import get_logger
 from .lru_cache import AsyncSlidingWindowRateLimiter
+from .metrics import metrics
 from .tokens import TokenCounter
 
 logger = get_logger(__name__)
@@ -121,7 +123,9 @@ class LLMClient:
             cache_key = self._get_cache_key(model, self.system_prompt, user_msg)
             cached = self.cache.get_by_key(cache_key)
             if cached:
+                metrics.record_cache_hit()
                 return cached, None
+            metrics.record_cache_miss()
 
             result, error = await self._call_api(session, model, user_msg)
             if result:
@@ -178,6 +182,7 @@ class LLMClient:
             "max_tokens": self.max_tokens,
         }
         last_error = None
+        start_time = time.time()
         for attempt in range(self.max_retries):
             try:
                 async with session.post(
@@ -200,14 +205,22 @@ class LLMClient:
                         )
                         result = data["choices"][0]["message"]["content"].strip()
                         if not result:
+                            latency = time.time() - start_time
+                            metrics.record_llm_request(model, latency, success=False)
                             return None, f"Empty content (reasoning {reasoning}/{total_tok})"
+                        latency = time.time() - start_time
+                        metrics.record_llm_request(model, latency, success=True)
                         return result, None
                     if resp.status == 400:
+                        latency = time.time() - start_time
+                        metrics.record_llm_request(model, latency, success=False)
                         return None, "Content filtered (400)"
                     last_error = f"HTTP {resp.status}"
             except (TimeoutError, aiohttp.ClientError, ConnectionError, OSError) as e:
                 last_error = f"{type(e).__name__}: {e}"
             except Exception as e:
+                latency = time.time() - start_time
+                metrics.record_llm_request(model, latency, success=False)
                 return None, f"Unexpected: {e}"
             wait = min(2**attempt * 2, 60)
             logger.warning(
@@ -218,6 +231,8 @@ class LLMClient:
                 max_retries=self.max_retries,
             )
             await asyncio.sleep(wait)
+        latency = time.time() - start_time
+        metrics.record_llm_request(model, latency, success=False)
         return None, f"Gave up after {self.max_retries} retries: {last_error}"
 
     async def score_and_classify(
@@ -287,10 +302,12 @@ class LLMClient:
             cache_key = self._get_cache_key(model, self.system_prompt, user_msg)
             cached = self.cache.get_by_key(cache_key)
             if cached:
+                metrics.record_cache_hit()
                 try:
                     return json.loads(cached), None
                 except json.JSONDecodeError:
                     pass
+            metrics.record_cache_miss()
 
             result, error = await self._call_api(session, model, user_msg)
             if result:
@@ -377,11 +394,13 @@ class LLMClient:
             cache_key = self._get_cache_key(model, self.system_prompt, prompt)
             cached = self.cache.get_by_key(cache_key)
             if cached:
+                metrics.record_cache_hit()
                 try:
                     data = json.loads(cached)
                     return data.get("results", [])
                 except json.JSONDecodeError:
                     pass
+            metrics.record_cache_miss()
 
             result, error = await self._call_api(session, model, prompt)
             if result:

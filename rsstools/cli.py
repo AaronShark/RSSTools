@@ -18,6 +18,8 @@ from rich.progress import (
 )
 from rich.table import Table
 
+import json as json_module
+
 from .context import set_correlation_id
 from .container import Container
 from .downloader import ArticleDownloader
@@ -452,3 +454,51 @@ def cmd_clean_cache(cfg: dict, max_age_days: int = 30, dry_run: bool = False):
         console.print("[yellow]Dry run — no files will be deleted[/yellow]")
     removed, size_freed = container.llm_cache.clean(max_age_days, dry_run=dry_run)
     console.print(f"Removed {removed} cache files, freed {size_freed:,} bytes")
+
+
+async def cmd_health(cfg: dict) -> bool:
+    """Check system health. Returns True if healthy."""
+    import sys
+
+    health_status = {
+        "status": "healthy",
+        "checks": {},
+    }
+    stats = {"total_articles": 0}
+
+    try:
+        async with Container(cfg) as container:
+            db_healthy = True
+            try:
+                await container.db.connect()
+                stats = await container.article_repo.get_stats()
+                health_status["checks"]["database"] = {
+                    "status": "ok",
+                    "articles": stats["total_articles"],
+                }
+            except Exception as e:
+                db_healthy = False
+                health_status["checks"]["database"] = {
+                    "status": "error",
+                    "error": str(e),
+                }
+
+            articles_healthy = stats.get("total_articles", 0) > 0
+            health_status["checks"]["articles_exist"] = {
+                "status": "ok" if articles_healthy else "warning",
+                "count": stats.get("total_articles", 0),
+            }
+
+            if not db_healthy:
+                health_status["status"] = "unhealthy"
+            elif not articles_healthy:
+                health_status["status"] = "degraded"
+    except Exception as e:
+        health_status["status"] = "unhealthy"
+        health_status["checks"]["container"] = {
+            "status": "error",
+            "error": str(e),
+        }
+
+    console.print_json(json_module.dumps(health_status))
+    return health_status["status"] != "unhealthy"

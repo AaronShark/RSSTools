@@ -6,6 +6,7 @@ from .content import ContentPreprocessor
 from .database import Database
 from .downloader import ArticleDownloader
 from .llm import LLMClient
+from .metrics import Metrics, metrics
 from .models import Config, DownloadConfig, LLMConfig, SummarizeConfig
 from .reader import run_reader
 from .repositories import ArticleRepository, CacheRepository, FeedRepository
@@ -32,6 +33,8 @@ __all__ = [
     "FeedRepository",
     "CacheRepository",
     "ArticleDownloader",
+    "Metrics",
+    "metrics",
     "safe_dirname",
     "parse_date_prefix",
     "parse_opml",

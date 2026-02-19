@@ -23,6 +23,7 @@ from rsstools.cli import (
     cmd_config,
     cmd_download,
     cmd_failed,
+    cmd_health,
     cmd_migrate,
     cmd_stats,
     cmd_summarize,
@@ -68,6 +69,9 @@ def main():
         help="Show what would be deleted without actually deleting",
     )
 
+    # health command
+    subparsers.add_parser("health", help="Check system health")
+
     # reader command
     subparsers.add_parser("reader", help="Launch TUI reader")
 
@@ -104,6 +108,9 @@ def main():
         cmd_config(cfg)
     elif args.command == "clean-cache":
         cmd_clean_cache(cfg, max_age_days=args.days, dry_run=args.dry_run)
+    elif args.command == "health":
+        healthy = asyncio.run(cmd_health(cfg))
+        sys.exit(0 if healthy else 1)
     elif args.command == "reader":
         run_reader(cfg["base_dir"])
     elif args.command == "migrate":
