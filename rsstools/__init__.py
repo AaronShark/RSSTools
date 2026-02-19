@@ -1,6 +1,7 @@
 """RSSTools - RSS Knowledge Base Tool"""
 
 from .config import load_config, DEFAULT_CONFIG
+from .models import Config, LLMConfig, DownloadConfig, SummarizeConfig
 from .cache import LLMCache
 from .content import ContentPreprocessor
 from .llm import LLMClient
@@ -15,6 +16,10 @@ from .reader import run_reader
 __all__ = [
     'load_config',
     'DEFAULT_CONFIG',
+    'Config',
+    'LLMConfig',
+    'DownloadConfig',
+    'SummarizeConfig',
     'LLMCache',
     'ContentPreprocessor',
     'LLMClient',
