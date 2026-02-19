@@ -4,13 +4,15 @@ import json
 import sqlite3
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 import aiosqlite
 
 from .logging_config import get_logger
 
 logger = get_logger(__name__)
+
+OrderBy = Literal["relevance", "date", "quality"]
 
 
 class Database:
@@ -148,16 +150,51 @@ class Database:
         row = await cursor.fetchone()
         return row is not None
 
-    async def search_articles(self, query: str, limit: int = 50) -> list[dict[str, Any]]:
-        """Search articles using FTS5 full-text search."""
-        cursor = await self._execute(
-            """SELECT a.* FROM articles a
-               JOIN articles_fts fts ON a.id = fts.rowid
-               WHERE articles_fts MATCH ?
-               ORDER BY a.published DESC
-               LIMIT ?""",
-            (query, limit),
-        )
+    async def search_articles(
+        self,
+        query: str,
+        limit: int = 50,
+        offset: int = 0,
+        order_by: OrderBy = "relevance",
+        category: Optional[str] = None,
+        source: Optional[str] = None,
+        date_start: Optional[str] = None,
+        date_end: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        """Search articles using FTS5 full-text search with BM25 ranking."""
+        where_clauses = ["articles_fts MATCH ?"]
+        params: list[Any] = [query]
+
+        if category:
+            where_clauses.append("a.category = ?")
+            params.append(category)
+        if source:
+            where_clauses.append("a.source_name = ?")
+            params.append(source)
+        if date_start:
+            where_clauses.append("a.published >= ?")
+            params.append(date_start)
+        if date_end:
+            where_clauses.append("a.published <= ?")
+            params.append(date_end)
+
+        if order_by == "relevance":
+            order_clause = "bm25(articles_fts) ASC"
+        elif order_by == "date":
+            order_clause = "a.published DESC"
+        elif order_by == "quality":
+            order_clause = "COALESCE(a.score_relevance, 0) DESC, COALESCE(a.score_quality, 0) DESC"
+        else:
+            order_clause = "bm25(articles_fts) ASC"
+
+        sql = f"""SELECT a.* FROM articles a
+                   JOIN articles_fts fts ON a.id = fts.rowid
+                   WHERE {' AND '.join(where_clauses)}
+                   ORDER BY {order_clause}
+                   LIMIT ? OFFSET ?"""
+        params.extend([limit, offset])
+
+        cursor = await self._execute(sql, tuple(params))
         rows = await cursor.fetchall()
         return [self._row_to_dict(row) for row in rows]
 

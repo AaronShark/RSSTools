@@ -123,6 +123,87 @@ class TestArticleRepository:
     results = await article_repo.search("nonexistent_term_xyz")
     assert len(results) == 0
 
+  async def test_search_with_bm25_ranking(self, article_repo, sample_article):
+    sample_article["title"] = "Python Python Python"
+    sample_article["summary"] = "All about Python programming"
+    await article_repo.add("https://example.com/1", sample_article)
+
+    sample_article["title"] = "Brief Python mention"
+    sample_article["summary"] = "Other content here"
+    await article_repo.add("https://example.com/2", sample_article)
+
+    results = await article_repo.search("Python", order_by="relevance")
+    assert len(results) == 2
+    assert results[0]["title"] == "Python Python Python"
+
+  async def test_search_order_by_date(self, article_repo, sample_article):
+    sample_article["title"] = "Old Article"
+    sample_article["published"] = "2023-01-01T00:00:00Z"
+    await article_repo.add("https://example.com/1", sample_article)
+
+    sample_article["title"] = "New Article"
+    sample_article["published"] = "2024-01-01T00:00:00Z"
+    await article_repo.add("https://example.com/2", sample_article)
+
+    results = await article_repo.search("Article", order_by="date")
+    assert len(results) == 2
+    assert results[0]["title"] == "New Article"
+
+  async def test_search_filter_by_category(self, article_repo, sample_article):
+    sample_article["title"] = "Tech Article"
+    sample_article["category"] = "Technology"
+    await article_repo.add("https://example.com/1", sample_article)
+
+    sample_article["title"] = "Science Article"
+    sample_article["category"] = "Science"
+    await article_repo.add("https://example.com/2", sample_article)
+
+    results = await article_repo.search("Article", category="Technology")
+    assert len(results) == 1
+    assert results[0]["category"] == "Technology"
+
+  async def test_search_filter_by_source(self, article_repo, sample_article):
+    sample_article["title"] = "Feed A Article"
+    sample_article["source_name"] = "Feed A"
+    await article_repo.add("https://example.com/1", sample_article)
+
+    sample_article["title"] = "Feed B Article"
+    sample_article["source_name"] = "Feed B"
+    await article_repo.add("https://example.com/2", sample_article)
+
+    results = await article_repo.search("Article", source="Feed A")
+    assert len(results) == 1
+    assert results[0]["source_name"] == "Feed A"
+
+  async def test_search_filter_by_date_range(self, article_repo, sample_article):
+    sample_article["title"] = "January Article"
+    sample_article["published"] = "2024-01-15T00:00:00Z"
+    await article_repo.add("https://example.com/1", sample_article)
+
+    sample_article["title"] = "March Article"
+    sample_article["published"] = "2024-03-15T00:00:00Z"
+    await article_repo.add("https://example.com/2", sample_article)
+
+    results = await article_repo.search(
+      "Article",
+      date_start="2024-02-01",
+      date_end="2024-04-01",
+    )
+    assert len(results) == 1
+    assert results[0]["title"] == "March Article"
+
+  async def test_search_with_offset(self, article_repo, sample_article):
+    sample_article["summary"] = "unique keyword foobar"
+    for i in range(5):
+      sample_article["title"] = f"Article {i}"
+      await article_repo.add(f"https://example.com/{i}", sample_article)
+
+    page1 = await article_repo.search("foobar", limit=2, offset=0)
+    page2 = await article_repo.search("foobar", limit=2, offset=2)
+    assert len(page1) == 2
+    assert len(page2) == 2
+    assert page1[0]["id"] != page2[0]["id"]
+
   async def test_search_respects_limit(self, article_repo, sample_article):
     sample_article["summary"] = "unique keyword foobar"
     for i in range(10):
@@ -174,6 +255,16 @@ class TestArticleRepository:
     await article_repo.add("https://example.com/3", sample_article)
     sources = await article_repo.get_sources()
     assert sources == ["Feed A", "Feed B"]
+
+  async def test_get_categories(self, article_repo, sample_article):
+    sample_article["category"] = "Technology"
+    await article_repo.add("https://example.com/1", sample_article)
+    sample_article["category"] = "Science"
+    await article_repo.add("https://example.com/2", sample_article)
+    sample_article["category"] = "Technology"
+    await article_repo.add("https://example.com/3", sample_article)
+    categories = await article_repo.get_categories()
+    assert categories == ["Science", "Technology"]
 
   async def test_get_stats(self, article_repo, sample_article):
     await article_repo.add("https://example.com/1", sample_article)

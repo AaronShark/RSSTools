@@ -1,11 +1,13 @@
 """Article repository for article-related database operations."""
 
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from ..database import Database
 from ..logging_config import get_logger
 
 logger = get_logger(__name__)
+
+OrderBy = Literal["relevance", "date", "quality"]
 
 
 class ArticleRepository:
@@ -31,8 +33,27 @@ class ArticleRepository:
   async def delete(self, url: str) -> bool:
     return await self._db.delete_article(url)
 
-  async def search(self, query: str, limit: int = 50) -> list[dict[str, Any]]:
-    return await self._db.search_articles(query, limit)
+  async def search(
+    self,
+    query: str,
+    limit: int = 50,
+    offset: int = 0,
+    order_by: OrderBy = "relevance",
+    category: Optional[str] = None,
+    source: Optional[str] = None,
+    date_start: Optional[str] = None,
+    date_end: Optional[str] = None,
+  ) -> list[dict[str, Any]]:
+    return await self._db.search_articles(
+      query=query,
+      limit=limit,
+      offset=offset,
+      order_by=order_by,
+      category=category,
+      source=source,
+      date_start=date_start,
+      date_end=date_end,
+    )
 
   async def list_all(self, limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
     return await self._db.get_all_articles(limit, offset)
@@ -52,6 +73,14 @@ class ArticleRepository:
       if article.get("source_name"):
         sources.add(article["source_name"])
     return sorted(sources)
+
+  async def get_categories(self) -> list[str]:
+    articles = await self._db.get_all_articles(limit=10000)
+    categories = set()
+    for article in articles:
+      if article.get("category"):
+        categories.add(article["category"])
+    return sorted(categories)
 
   async def get_stats(self) -> dict[str, int]:
     return await self._db.get_stats()

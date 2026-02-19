@@ -492,6 +492,44 @@ class RSSReaderApp(App):
         self.page = 0
         self.selected_index = 0
 
+    async def async_filter_articles(self):
+        """Apply search and date filters using FTS5 full-text search."""
+        if self.search_query:
+            filtered = await self.article_repo.search(
+                query=self.search_query,
+                limit=10000,
+                order_by="relevance",
+                date_start=self.date_start if self.date_start else None,
+                date_end=self.date_end if self.date_end else None,
+            )
+        else:
+            filtered = self.articles[:]
+            if self.date_start or self.date_end:
+
+                def date_match(article):
+                    pub_date = self._parse_date(article.get("published", ""))
+                    if self.date_start:
+                        try:
+                            start = datetime.strptime(self.date_start, "%Y-%m-%d")
+                            if pub_date < start:
+                                return False
+                        except ValueError:
+                            pass
+                    if self.date_end:
+                        try:
+                            end = datetime.strptime(self.date_end, "%Y-%m-%d")
+                            if pub_date > end:
+                                return False
+                        except ValueError:
+                            pass
+                    return True
+
+                filtered = [a for a in filtered if date_match(a)]
+
+        self.filtered_articles = filtered
+        self.page = 0
+        self.selected_index = 0
+
     def get_total_pages(self) -> int:
         return max(1, (len(self.filtered_articles) + self.per_page - 1) // self.per_page)
 
@@ -515,7 +553,7 @@ class RSSReaderApp(App):
         filters = []
         if self.search_query:
             filters.append(f'🔍 Search="{self.search_query}" [C=Clear]')
-            filters.append("📊 Sort: Score (Relevance>Quality>Timeliness)")
+            filters.append("📊 Sort: BM25 Relevance (FTS5)")
         if self.date_start or self.date_end:
             filters.append(
                 f"📅 Date={self.date_start or '...'} ~ {self.date_end or '...'} [X=Clear]"
@@ -546,7 +584,6 @@ class RSSReaderApp(App):
 
             container.mount_all(widgets)
 
-            # Scroll to selected widget after refresh
             if selected_widget:
                 self.call_after_refresh(self._scroll_to_item, selected_widget)
         else:
@@ -560,7 +597,6 @@ class RSSReaderApp(App):
         self.query_one("#message", Label).update(self.message)
 
     def _scroll_to_item(self, widget):
-        """Scroll to make widget visible after refresh"""
         try:
             container = self.query_one("#articles-container")
             container.scroll_to_widget(widget, animate=False, force=True, top=True)
@@ -664,7 +700,6 @@ class RSSReaderApp(App):
         from textual.command import CommandPalette
         from textual.widgets import HelpPanel
 
-        # Try to close help panel first
         try:
             help_panel = self.query_one(HelpPanel)
             help_panel.remove()
@@ -672,7 +707,6 @@ class RSSReaderApp(App):
         except:
             pass
 
-        # Try to close command palette
         try:
             palette = self.query_one(CommandPalette)
             try:
