@@ -6,7 +6,7 @@ import json
 import os
 import sys
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Optional
 
 from rich.console import Console
 from rich.progress import (
@@ -53,7 +53,7 @@ async def migrate(base_dir: str, db_path: str, dry_run: bool = False) -> dict[st
     summary_failures = index_data.get("summary_failures", {})
     feed_etags = index_data.get("feed_etags", {})
     
-    stats = {
+    stats: dict[str, Any] = {
         "articles_migrated": 0,
         "articles_skipped": 0,
         "feed_failures_migrated": 0,
@@ -63,9 +63,9 @@ async def migrate(base_dir: str, db_path: str, dry_run: bool = False) -> dict[st
         "errors": [],
     }
     
+    db: Optional[Database] = None
     if dry_run:
         console.print("[yellow]DRY RUN - no changes will be made[/yellow]\n")
-        db = None
     else:
         db = Database(db_path)
         await db.connect()
@@ -116,6 +116,7 @@ async def migrate(base_dir: str, db_path: str, dry_run: bool = False) -> dict[st
                     if dry_run:
                         stats["articles_migrated"] += 1
                     else:
+                        assert db is not None
                         existing = await db.get_article(url)
                         if existing:
                             await db.update_article(url, article_data)
@@ -132,6 +133,7 @@ async def migrate(base_dir: str, db_path: str, dry_run: bool = False) -> dict[st
                 progress.advance(task_id)
         
         if not dry_run:
+            assert db is not None
             console.print("\nMigrating failures and etags...")
             
             for url, info in feed_failures.items():
@@ -215,7 +217,7 @@ async def verify_migration(base_dir: str, db_path: str) -> dict[str, Any]:
     try:
         db_stats = await db.get_stats()
         
-        verification = {
+        verification: dict[str, Any] = {
             "index_articles": len(articles),
             "db_articles": db_stats["total_articles"],
             "match": len(articles) == db_stats["total_articles"],

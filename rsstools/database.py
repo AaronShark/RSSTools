@@ -39,20 +39,24 @@ class Database:
         """Create all tables, indexes, and triggers."""
         await self._execute_script(SCHEMA_SQL)
 
-    async def _execute_script(self, script: str) -> None:
-        """Execute a SQL script with multiple statements."""
+    def _get_conn(self) -> aiosqlite.Connection:
+        """Get connection or raise if not connected."""
         if not self._conn:
             raise RuntimeError("Database not connected")
-        await self._conn.executescript(script)
-        await self._conn.commit()
+        return self._conn
+
+    async def _execute_script(self, script: str) -> None:
+        """Execute a SQL script with multiple statements."""
+        conn = self._get_conn()
+        await conn.executescript(script)
+        await conn.commit()
 
     async def _execute(
         self, query: str, params: tuple = ()
     ) -> aiosqlite.Cursor:
         """Execute a single query."""
-        if not self._conn:
-            raise RuntimeError("Database not connected")
-        return await self._conn.execute(query, params)
+        conn = self._get_conn()
+        return await conn.execute(query, params)
 
     async def begin_migration(self) -> None:
         """Begin a migration transaction."""
@@ -68,7 +72,7 @@ class Database:
     async def set_schema_version(self, version: int) -> None:
         """Set schema version after successful migration."""
         await self._execute("INSERT OR REPLACE INTO schema_version (version) VALUES (?)", (version,))
-        await self._conn.commit()
+        await self._get_conn().commit()
         logger.info("schema_version_set", version=version)
 
     async def add_article(self, article: dict[str, Any]) -> int:
@@ -98,9 +102,11 @@ class Database:
                 keywords_json,
             ),
         )
-        await self._conn.commit()
-        logger.debug("article_added", url=article["url"], id=cursor.lastrowid)
-        return cursor.lastrowid
+        await self._get_conn().commit()
+        lastrowid = cursor.lastrowid
+        assert lastrowid is not None
+        logger.debug("article_added", url=article["url"], id=lastrowid)
+        return lastrowid
 
     async def get_article(self, url: str) -> Optional[dict[str, Any]]:
         """Get article by URL."""
@@ -133,7 +139,7 @@ class Database:
             f"UPDATE articles SET {', '.join(set_clauses)} WHERE url = ?",
             tuple(values),
         )
-        await self._conn.commit()
+        await self._get_conn().commit()
         return cursor.rowcount > 0
 
     async def article_exists(self, url: str) -> bool:
@@ -167,7 +173,7 @@ class Database:
     async def delete_article(self, url: str) -> bool:
         """Delete article by URL. Returns True if article was deleted."""
         cursor = await self._execute("DELETE FROM articles WHERE url = ?", (url,))
-        await self._conn.commit()
+        await self._get_conn().commit()
         return cursor.rowcount > 0
 
     async def record_feed_failure(self, url: str, error: str) -> None:
@@ -181,7 +187,7 @@ class Database:
                    retries = retries + 1""",
             (url, error, datetime.now(UTC).isoformat()),
         )
-        await self._conn.commit()
+        await self._get_conn().commit()
 
     async def get_feed_failure(self, url: str) -> Optional[dict[str, Any]]:
         """Get feed failure info."""
@@ -192,7 +198,7 @@ class Database:
     async def clear_feed_failure(self, url: str) -> bool:
         """Clear feed failure record."""
         cursor = await self._execute("DELETE FROM feed_failures WHERE url = ?", (url,))
-        await self._conn.commit()
+        await self._get_conn().commit()
         return cursor.rowcount > 0
 
     async def record_article_failure(self, url: str, error: str) -> None:
@@ -206,7 +212,7 @@ class Database:
                    retries = retries + 1""",
             (url, error, datetime.now(UTC).isoformat()),
         )
-        await self._conn.commit()
+        await self._get_conn().commit()
 
     async def get_article_failure(self, url: str) -> Optional[dict[str, Any]]:
         """Get article failure info."""
@@ -217,7 +223,7 @@ class Database:
     async def clear_article_failure(self, url: str) -> bool:
         """Clear article failure record."""
         cursor = await self._execute("DELETE FROM article_failures WHERE url = ?", (url,))
-        await self._conn.commit()
+        await self._get_conn().commit()
         return cursor.rowcount > 0
 
     async def record_summary_failure(self, url: str, title: str, filepath: str, error: str) -> None:
@@ -227,7 +233,7 @@ class Database:
                VALUES (?, ?, ?, ?)""",
             (url, title, filepath, error),
         )
-        await self._conn.commit()
+        await self._get_conn().commit()
 
     async def get_summary_failure(self, url: str) -> Optional[dict[str, Any]]:
         """Get summary failure info."""
@@ -242,7 +248,7 @@ class Database:
                VALUES (?, ?, ?, ?)""",
             (url, etag, last_modified, datetime.now(UTC).isoformat()),
         )
-        await self._conn.commit()
+        await self._get_conn().commit()
 
     async def get_feed_etag(self, url: str) -> Optional[dict[str, Any]]:
         """Get stored feed ETag info."""
