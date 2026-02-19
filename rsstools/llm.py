@@ -6,6 +6,7 @@ import json
 import aiohttp
 
 from .cache import LLMCache
+from .circuit_breaker import CircuitBreaker, CircuitState
 from .content import ContentPreprocessor
 from .logging_config import get_logger
 
@@ -30,6 +31,14 @@ class LLMClient:
         self.api_key = cfg.get("api_key", "")
         self._lock = asyncio.Lock()
         self.preprocessor = ContentPreprocessor()
+        self._circuit_breakers: dict[str, CircuitBreaker] = {}
+        cb_failure_threshold = cfg.get("circuit_breaker_failure_threshold", 5)
+        cb_recovery_timeout = cfg.get("circuit_breaker_recovery_timeout", 60.0)
+        for model in self.models:
+            self._circuit_breakers[model] = CircuitBreaker(
+                failure_threshold=cb_failure_threshold,
+                recovery_timeout=cb_recovery_timeout,
+            )
 
     @property
     def enabled(self) -> bool:
@@ -48,25 +57,47 @@ class LLMClient:
         cleaned = self.preprocessor.process(content)
         truncated = cleaned[: self.max_content_chars]
         user_msg = self.user_prompt_template.format(title=title, content=truncated)
+        last_error = None
 
         for model in self.models:
-            # Check cache
+            cb = self._circuit_breakers.get(model)
+            if cb and not await cb.can_execute():
+                logger.warning(
+                    "circuit_breaker_open",
+                    model=model,
+                    state=cb.state.value,
+                    action="skipping_model",
+                )
+                continue
+
             cached = self.cache.get(model, self.system_prompt, user_msg)
             if cached:
                 return cached, None
 
             result, error = await self._call_api(session, model, user_msg)
             if result:
+                if cb:
+                    await cb.record_success()
                 self.cache.put(model, self.system_prompt, user_msg, result)
                 await asyncio.sleep(self.request_delay)
                 return result, None
-            # If this model failed with 400 (content filter), skip all models
+            if cb:
+                prev_state = cb.state
+                await cb.record_failure()
+                if prev_state != cb.state:
+                    logger.info(
+                        "circuit_breaker_state_change",
+                        model=model,
+                        from_state=prev_state.value,
+                        to_state=cb.state.value,
+                    )
             if error and error == "Content filtered (400)":
                 return None, error
+            last_error = error
             logger.warning("model_failed", model=model, error=error, action="trying_next")
 
         await asyncio.sleep(self.request_delay)
-        return None, error
+        return None, last_error
 
     async def _call_api(self, session, model, user_msg):
         url = f"{self.host}/chat/completions"
@@ -151,7 +182,18 @@ class LLMClient:
         )
 
         user_msg = prompt
+        last_error = None
         for model in self.models:
+            cb = self._circuit_breakers.get(model)
+            if cb and not await cb.can_execute():
+                logger.warning(
+                    "circuit_breaker_open",
+                    model=model,
+                    state=cb.state.value,
+                    action="skipping_model",
+                )
+                continue
+
             cached = self.cache.get(model, self.system_prompt, user_msg)
             if cached:
                 try:
@@ -161,6 +203,8 @@ class LLMClient:
 
             result, error = await self._call_api(session, model, user_msg)
             if result:
+                if cb:
+                    await cb.record_success()
                 try:
                     data = json.loads(result)
                     self.cache.put(model, self.system_prompt, user_msg, result)
@@ -169,12 +213,23 @@ class LLMClient:
                 except json.JSONDecodeError as e:
                     return None, f"Invalid JSON response: {e}"
 
+            if cb:
+                prev_state = cb.state
+                await cb.record_failure()
+                if prev_state != cb.state:
+                    logger.info(
+                        "circuit_breaker_state_change",
+                        model=model,
+                        from_state=prev_state.value,
+                        to_state=cb.state.value,
+                    )
             if error and error == "Content filtered (400)":
                 return None, error
+            last_error = error
             logger.warning("score_model_failed", model=model, error=error, action="trying_next")
 
         await asyncio.sleep(self.request_delay)
-        return None, error
+        return None, last_error
 
     async def summarize_batch(
         self, session: aiohttp.ClientSession, articles: list[dict]

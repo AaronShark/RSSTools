@@ -15,6 +15,8 @@ class LLMConfig(BaseModel):
     request_delay: float = 0.5
     max_retries: int = 5
     timeout: int = 60
+    circuit_breaker_failure_threshold: int = 5
+    circuit_breaker_recovery_timeout: float = 60.0
     system_prompt: str = "You are a helpful assistant that summarizes articles concisely."
     user_prompt: str = (
         "Summarize this article in 2-3 sentences, "
