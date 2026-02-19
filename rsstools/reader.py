@@ -7,6 +7,7 @@ import re
 import warnings
 import webbrowser
 from datetime import datetime
+from typing import Literal
 
 import aiosqlite
 
@@ -22,6 +23,8 @@ from textual.widgets import Footer, Header, Input, Label, Static
 from .database import Database
 from .lru_cache import SyncLRUCache
 from .repositories import ArticleRepository
+
+SortMode = Literal["date", "score", "source", "relevance"]
 
 # Nord Color Scheme
 NORD = {
@@ -124,6 +127,12 @@ Footer {{
     color: {NORD["snow_storm"]["base"]};
 }}
 
+.highlight {{
+    background: {NORD["aurora"]["yellow"]};
+    color: {NORD["polar_night"]["dark"]};
+    text-style: bold;
+}}
+
 .separator {{
     color: {NORD["polar_night"]["snow"]};
 }}
@@ -208,24 +217,39 @@ HelpPanel {{
 class ArticleWidget(Static):
     """Single article display widget"""
 
-    def __init__(self, article: dict, index: int, is_selected: bool = False):
+    def __init__(
+        self,
+        article: dict,
+        index: int,
+        is_selected: bool = False,
+        highlight_terms: list[str] | None = None,
+    ):
         self.article = article
         self.index = index
         self.is_selected = is_selected
+        self.highlight_terms = highlight_terms or []
         super().__init__(classes="article selected" if is_selected else "article")
+
+    def _highlight_text(self, text: str) -> str:
+        if not self.highlight_terms or not text:
+            return text
+        result = text
+        for term in self.highlight_terms:
+            if not term:
+                continue
+            pattern = re.compile(re.escape(term), re.IGNORECASE)
+            result = pattern.sub(f"[reverse]{term}[/reverse]", result)
+        return result
 
     def compose(self) -> ComposeResult:
         num = self.index + 1
 
-        # Separator
         yield Label(f"{'━' * 60}", classes="separator")
 
-        # Title with icon
-        title = self.article["title"][:80]
+        title = self._highlight_text(self.article["title"][:80])
         title_class = "article-title-selected" if self.is_selected else "article-title"
         yield Label(f"{'▶' if self.is_selected else '📰'} {num}. {title}", classes=title_class)
 
-        # Meta (date and source) with icons
         date_str = self.article["published"]
         if date_str:
             try:
@@ -242,13 +266,11 @@ class ArticleWidget(Static):
         meta.update(f"  📅 Date: {date_display}  🌐 Source: {self.article['source_name']}")
         yield meta
 
-        # URL with icon
         url = self.article["url"]
         if len(url) > 70:
             url = url[:67] + "..."
         yield Label(f"  🔗 URL: {url}", classes="article-url")
 
-        # Category and scores if available
         category = self.article.get("category", "")
         if category:
             cat_emoji = {
@@ -261,7 +283,6 @@ class ArticleWidget(Static):
             }.get(category, "📄")
             yield Label(f"  {cat_emoji} Category: {category}", classes="article-meta")
 
-        # Scores if available
         rel = self.article.get("score_relevance")
         qual = self.article.get("score_quality")
         time = self.article.get("score_timeliness")
@@ -271,7 +292,6 @@ class ArticleWidget(Static):
                 classes="article-meta",
             )
 
-        # Keywords if available
         keywords = self.article.get("keywords", [])
         if keywords:
             kw_str = ", ".join(keywords[:5])
@@ -279,10 +299,9 @@ class ArticleWidget(Static):
                 kw_str += "..."
             yield Label(f"  🏷️  Keywords: {kw_str}", classes="article-meta")
 
-        # Summary with icon
         yield Label("  📝 Summary:", classes="article-summary-label")
 
-        summary = self.article["summary"]
+        summary = self._highlight_text(self.article["summary"])
         words = summary.split()
         lines = []
         current_line = ""
@@ -310,6 +329,9 @@ class RSSReaderApp(App):
     BINDINGS = [
         Binding("s", "search", "Search"),
         Binding("d", "date", "Date"),
+        Binding("o", "sort_mode", "Sort"),
+        Binding("g", "category_filter", "Category"),
+        Binding("e", "export", "Export"),
         Binding("c", "clear_search", "ClrSrch"),
         Binding("x", "clear_date", "ClrDate"),
         Binding("r", "reset", "Reset"),
@@ -341,6 +363,10 @@ class RSSReaderApp(App):
         self.min_date = None
         self.max_date = None
         self._body_cache = SyncLRUCache[str, str](max_size=cache_max_size)
+        self.sort_mode: SortMode = "date"
+        self.selected_categories: list[str] = []
+        self.available_categories: list[str] = []
+        self.available_sources: list[str] = []
 
     async def load_articles(self):
         """Load and sort articles from database"""
@@ -356,6 +382,9 @@ class RSSReaderApp(App):
         )
         self.filtered_articles = self.articles[:]
         self.message = f"Loaded {len(self.articles)} articles"
+
+        self.available_categories = await self.article_repo.get_categories()
+        self.available_sources = await self.article_repo.get_sources()
 
         if self.articles:
             dates = [self._parse_date(a.get("published", "")) for a in self.articles]
@@ -459,12 +488,14 @@ class RSSReaderApp(App):
         return True
 
     def filter_articles(self):
-        """Apply search and date filters with score sorting"""
+        """Apply search and date filters with sorting"""
         filtered = self.articles[:]
+
+        if self.selected_categories:
+            filtered = [a for a in filtered if a.get("category") in self.selected_categories]
 
         if self.search_query:
             filtered = [a for a in filtered if self._match_search(a, self.search_query)]
-            filtered = self._sort_articles_by_score(filtered)
 
         if self.date_start or self.date_end:
 
@@ -487,6 +518,8 @@ class RSSReaderApp(App):
                 return True
 
             filtered = [a for a in filtered if date_match(a)]
+
+        filtered = self._sort_articles(filtered)
 
         self.filtered_articles = filtered
         self.page = 0
@@ -551,17 +584,54 @@ class RSSReaderApp(App):
 
     def _get_filter_text(self) -> str:
         filters = []
+        sort_names = {"date": "Date", "score": "Score", "source": "Source", "relevance": "BM25"}
+        filters.append(f"📊 Sort: {sort_names[self.sort_mode]} [O=Cycle]")
         if self.search_query:
             filters.append(f'🔍 Search="{self.search_query}" [C=Clear]')
-            filters.append("📊 Sort: BM25 Relevance (FTS5)")
         if self.date_start or self.date_end:
             filters.append(
                 f"📅 Date={self.date_start or '...'} ~ {self.date_end or '...'} [X=Clear]"
             )
+        if self.selected_categories:
+            filters.append(f"📁 Categories: {', '.join(self.selected_categories)}")
 
-        if filters:
+        if len(filters) > 1:
             return f"Filters: {' | '.join(filters)}"
-        return "Filters: None"
+        return f"Filters: {filters[0]}" if filters else "Filters: None"
+
+    def _get_highlight_terms(self) -> list[str]:
+        if not self.search_query:
+            return []
+        terms = []
+        query = self.search_query
+        phrases = re.findall(r'"([^"]+)"', query)
+        terms.extend(phrases)
+        query = re.sub(r'"[^"]+"\s*', "", query)
+        query = re.sub(r"-\w+\s*", "", query)
+        query = re.sub(r"\s+OR\s+", " ", query, flags=re.IGNORECASE)
+        words = query.split()
+        terms.extend([w for w in words if w and len(w) > 1])
+        return terms
+
+    def _sort_articles(self, articles: list[dict]) -> list[dict]:
+        if self.sort_mode == "date":
+            return sorted(
+                articles, key=lambda x: self._parse_date(x.get("published", "")), reverse=True
+            )
+        elif self.sort_mode == "score":
+            return sorted(
+                articles,
+                key=lambda x: (
+                    x.get("score_relevance") or 0,
+                    x.get("score_quality") or 0,
+                    x.get("score_timeliness") or 0,
+                ),
+                reverse=True,
+            )
+        elif self.sort_mode == "source":
+            return sorted(articles, key=lambda x: x.get("source_name", "").lower())
+        else:
+            return articles
 
     def _update_articles(self):
         container = self.query_one("#articles-container")
@@ -571,13 +641,15 @@ class RSSReaderApp(App):
         end = start + self.per_page
         page_articles = self.filtered_articles[start:end]
 
+        highlight_terms = self._get_highlight_terms()
+
         widgets = []
         selected_widget = None
 
         if page_articles:
             for i, article in enumerate(page_articles):
                 is_selected = i == self.selected_index
-                widget = ArticleWidget(article, start + i, is_selected)
+                widget = ArticleWidget(article, start + i, is_selected, highlight_terms)
                 widgets.append(widget)
                 if is_selected:
                     selected_widget = widget
@@ -695,6 +767,24 @@ class RSSReaderApp(App):
         """Open theme selector"""
         self.search_themes()
 
+    def action_sort_mode(self):
+        """Cycle through sort modes"""
+        modes: list[SortMode] = ["date", "score", "source", "relevance"]
+        current_idx = modes.index(self.sort_mode)
+        self.sort_mode = modes[(current_idx + 1) % len(modes)]
+        self.filter_articles()
+        sort_names = {"date": "Date", "score": "Score", "source": "Source", "relevance": "BM25"}
+        self.message = f"Sort mode: {sort_names[self.sort_mode]}"
+        self._update_articles()
+
+    def action_category_filter(self):
+        """Open category filter screen"""
+        self.push_screen(CategoryFilterScreen(self))
+
+    def action_export(self):
+        """Export filtered articles"""
+        self.push_screen(ExportScreen(self))
+
     def action_close_help_or_palette(self):
         """Close help panel or command palette if open"""
         from textual.command import CommandPalette
@@ -802,6 +892,263 @@ class SearchScreen(ModalScreen):
                 self.parent_app.message = "Search cleared"
             self.parent_app.refresh_after_filter()
             self.app.pop_screen()
+
+    def action_cancel(self):
+        self.app.pop_screen()
+
+
+class CategoryFilterScreen(ModalScreen):
+    """Category filter selection screen"""
+
+    CSS = f"""
+    CategoryFilterScreen {{
+        align: center middle;
+    }}
+
+    .modal-container {{
+        background: {NORD["polar_night"]["lighter"]};
+        padding: 2;
+        border: solid {NORD["frost"]["water"]};
+        width: 60;
+        max-height: 25;
+    }}
+
+    .modal-title {{
+        color: {NORD["frost"]["water"]};
+        text-style: bold;
+        margin-bottom: 1;
+    }}
+
+    .modal-label {{
+        color: {NORD["snow_storm"]["base"]};
+        margin-bottom: 1;
+    }}
+
+    .modal-hint {{
+        color: {NORD["snow_storm"]["dark"]};
+        text-style: dim;
+        margin-bottom: 1;
+    }}
+
+    .category-list {{
+        max-height: 12;
+        overflow-y: auto;
+    }}
+
+    .category-item {{
+        color: {NORD["snow_storm"]["base"]};
+        padding: 0 1;
+    }}
+
+    .category-selected {{
+        color: {NORD["aurora"]["green"]};
+    }}
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+        Binding("a", "toggle_all", "All"),
+        Binding("n", "toggle_none", "None"),
+        Binding("enter", "apply", "Apply"),
+    ]
+
+    def __init__(self, parent_app: "RSSReaderApp"):
+        super().__init__()
+        self.parent_app = parent_app
+        self.selected: set[str] = set(parent_app.selected_categories)
+
+    def compose(self) -> ComposeResult:
+        categories = self.parent_app.available_categories
+        current = ", ".join(self.parent_app.selected_categories) or "None"
+
+        yield Container(
+            Label("📁 Category Filter", classes="modal-title"),
+            Label(f"Available: {len(categories)} categories", classes="modal-hint"),
+            Label(f"Current: {current}", classes="modal-current"),
+            Container(
+                *[
+                    Label(
+                        f"{'✓' if cat in self.selected else '○'} {cat}",
+                        classes=f"category-item {'category-selected' if cat in self.selected else ''}",
+                        id=f"cat-{i}",
+                    )
+                    for i, cat in enumerate(categories)
+                ],
+                classes="category-list modal-container",
+            ),
+            Label("[Enter=Apply] [A=All] [N=None] [Esc=Cancel]", classes="modal-hint"),
+            classes="modal-container",
+        )
+
+    def on_label_clicked(self, event):
+        label_id = event.label.id
+        if label_id and label_id.startswith("cat-"):
+            idx = int(label_id.split("-")[1])
+            cat = self.parent_app.available_categories[idx]
+            if cat in self.selected:
+                self.selected.remove(cat)
+            else:
+                self.selected.add(cat)
+            self._refresh_list()
+
+    def _refresh_list(self):
+        list_container = self.query_one(".category-list")
+        list_container.remove_children()
+        categories = self.parent_app.available_categories
+        for i, cat in enumerate(categories):
+            is_selected = cat in self.selected
+            label = Label(
+                f"{'✓' if is_selected else '○'} {cat}",
+                classes=f"category-item {'category-selected' if is_selected else ''}",
+                id=f"cat-{i}",
+            )
+            list_container.mount(label)
+
+    def action_toggle_all(self):
+        self.selected = set(self.parent_app.available_categories)
+        self._refresh_list()
+
+    def action_toggle_none(self):
+        self.selected.clear()
+        self._refresh_list()
+
+    def action_apply(self):
+        self.parent_app.selected_categories = sorted(self.selected)
+        self.parent_app.filter_articles()
+        count = len(self.parent_app.filtered_articles)
+        cats = ", ".join(self.parent_app.selected_categories) or "all"
+        self.parent_app.message = f"Filtered to {cats}: {count} articles"
+        self.parent_app.refresh_after_filter()
+        self.app.pop_screen()
+
+    def action_cancel(self):
+        self.app.pop_screen()
+
+
+class ExportScreen(ModalScreen):
+    """Export filtered articles screen"""
+
+    CSS = f"""
+    ExportScreen {{
+        align: center middle;
+    }}
+
+    .modal-container {{
+        background: {NORD["polar_night"]["lighter"]};
+        padding: 2;
+        border: solid {NORD["frost"]["water"]};
+        width: 60;
+    }}
+
+    .modal-title {{
+        color: {NORD["frost"]["water"]};
+        text-style: bold;
+        margin-bottom: 1;
+    }}
+
+    .modal-label {{
+        color: {NORD["snow_storm"]["base"]};
+        margin-bottom: 1;
+    }}
+
+    .modal-hint {{
+        color: {NORD["snow_storm"]["dark"]};
+        text-style: dim;
+        margin-bottom: 1;
+    }}
+
+    .modal-current {{
+        color: {NORD["aurora"]["yellow"]};
+        margin-bottom: 1;
+    }}
+
+    .export-options {{
+        margin: 1 0;
+    }}
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "Cancel"),
+    ]
+
+    def __init__(self, parent_app: "RSSReaderApp"):
+        super().__init__()
+        self.parent_app = parent_app
+
+    def compose(self) -> ComposeResult:
+        count = len(self.parent_app.filtered_articles)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        default_name = f"articles_export_{timestamp}.json"
+
+        yield Container(
+            Label("📤 Export Articles", classes="modal-title"),
+            Label(f"Articles to export: {count}", classes="modal-current"),
+            Label("Export format: JSON with metadata", classes="modal-hint"),
+            Label(f"Default filename: {default_name}", classes="modal-hint"),
+            Label("Filename:", classes="modal-label"),
+            Input(
+                placeholder="Enter filename or press Enter for default",
+                id="export-filename",
+                value=default_name,
+            ),
+            Label("[Enter=Export] [Esc=Cancel]", classes="modal-hint"),
+            classes="modal-container",
+        )
+
+    def on_mount(self):
+        input_widget = self.query_one(Input)
+        input_widget.focus()
+        input_widget.action_select_all()
+
+    def on_input_submitted(self, event):
+        if event.input.id == "export-filename":
+            filename = event.value.strip()
+            if not filename:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                filename = f"articles_export_{timestamp}.json"
+            if not filename.endswith(".json"):
+                filename += ".json"
+            self._export_articles(filename)
+
+    def _export_articles(self, filename: str):
+        articles = self.parent_app.filtered_articles
+        export_data = {
+            "export_timestamp": datetime.now().isoformat(),
+            "total_articles": len(articles),
+            "filters": {
+                "search_query": self.parent_app.search_query,
+                "date_start": self.parent_app.date_start,
+                "date_end": self.parent_app.date_end,
+                "categories": self.parent_app.selected_categories,
+                "sort_mode": self.parent_app.sort_mode,
+            },
+            "articles": [
+                {
+                    "url": a.get("url"),
+                    "title": a.get("title"),
+                    "summary": a.get("summary"),
+                    "published": a.get("published"),
+                    "source_name": a.get("source_name"),
+                    "category": a.get("category"),
+                    "keywords": a.get("keywords", []),
+                    "score_relevance": a.get("score_relevance"),
+                    "score_quality": a.get("score_quality"),
+                    "score_timeliness": a.get("score_timeliness"),
+                    "filepath": a.get("filepath"),
+                }
+                for a in articles
+            ],
+        }
+
+        try:
+            with open(filename, "w", encoding="utf-8") as f:
+                json.dump(export_data, f, indent=2, ensure_ascii=False)
+            self.parent_app.message = f"✅ Exported {len(articles)} articles to {filename}"
+        except Exception as e:
+            self.parent_app.message = f"❌ Export failed: {e}"
+
+        self.parent_app.refresh_after_filter()
+        self.app.pop_screen()
 
     def action_cancel(self):
         self.app.pop_screen()
