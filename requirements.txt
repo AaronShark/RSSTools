@@ -6,3 +6,8 @@ rich>=13.0
 textual>=0.40.0
 python-dateutil>=2.8
 trafilatura>=1.8
+
+pytest>=8.0
+pytest-asyncio>=0.23
+pytest-cov>=4.1
+pytest-aiohttp>=1.0
