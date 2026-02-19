@@ -28,6 +28,20 @@ class LLMCache:
         with open(path, "w", encoding="utf-8") as f:
             f.write(result)
 
+    def get_by_key(self, key: str) -> str | None:
+        """Get cached result by pre-computed key."""
+        path = os.path.join(self.cache_dir, key)
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                return f.read()
+        return None
+
+    def put_by_key(self, key: str, result: str):
+        """Store result with pre-computed key."""
+        path = os.path.join(self.cache_dir, key)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(result)
+
     def clean(self, max_age_days: int = 30, dry_run: bool = False) -> tuple[int, int]:
         """Remove cache files older than max_age_days. Returns (files_removed, bytes_freed)."""
         if not os.path.exists(self.cache_dir):

@@ -22,6 +22,8 @@ class LLMConfig(BaseModel):
         "Summarize this article in 2-3 sentences, "
         "in the same language as the article.\n\nTitle: {title}\n\n{content}"
     )
+    rate_limit_requests_per_minute: dict[str, int] = Field(default_factory=dict)
+    use_content_only_cache_key: bool = False
 
     @field_validator("models")
     @classmethod

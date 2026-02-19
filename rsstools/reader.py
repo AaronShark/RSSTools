@@ -20,6 +20,7 @@ from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, Input, Label, Static
 
 from .database import Database
+from .lru_cache import SyncLRUCache
 from .repositories import ArticleRepository
 
 # Nord Color Scheme
@@ -325,7 +326,7 @@ class RSSReaderApp(App):
     page = reactive(0)
     selected_index = reactive(0)
 
-    def __init__(self, base_dir: str):
+    def __init__(self, base_dir: str, cache_max_size: int = 100):
         super().__init__()
         self.base_dir = os.path.expanduser(base_dir)
         self.db: Database | None = None
@@ -339,6 +340,7 @@ class RSSReaderApp(App):
         self.date_end = ""
         self.min_date = None
         self.max_date = None
+        self._body_cache = SyncLRUCache[str, str](max_size=cache_max_size)
 
     async def load_articles(self):
         """Load and sort articles from database"""
@@ -379,17 +381,23 @@ class RSSReaderApp(App):
             return datetime.min
 
     def _load_article_body(self, filepath: str) -> str | None:
-        """Load article body from file on demand"""
+        """Load article body from file on demand, with LRU caching."""
         if not filepath:
             return ""
+        cached = self._body_cache.get(filepath)
+        if cached is not None:
+            return cached
         try:
             full_path = os.path.join(self.base_dir, filepath)
             with open(full_path, encoding="utf-8") as f:
                 from .utils import extract_front_matter
 
                 fm, body = extract_front_matter(f.read())
-                return body if fm else ""
+                result = body if fm else ""
+                self._body_cache.put(filepath, result)
+                return result
         except Exception:
+            self._body_cache.put(filepath, "")
             return ""
 
     def _get_article_score(self, article: dict) -> tuple[int, int, int]:

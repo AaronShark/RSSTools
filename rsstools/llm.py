@@ -9,6 +9,7 @@ from .cache import LLMCache
 from .circuit_breaker import CircuitBreaker, CircuitState
 from .content import ContentPreprocessor
 from .logging_config import get_logger
+from .lru_cache import AsyncSlidingWindowRateLimiter
 
 logger = get_logger(__name__)
 
@@ -32,17 +33,33 @@ class LLMClient:
         self._lock = asyncio.Lock()
         self.preprocessor = ContentPreprocessor()
         self._circuit_breakers: dict[str, CircuitBreaker] = {}
+        self._rate_limiters: dict[str, AsyncSlidingWindowRateLimiter] = {}
+        self.use_content_only_cache_key = cfg.get("use_content_only_cache_key", False)
         cb_failure_threshold = cfg.get("circuit_breaker_failure_threshold", 5)
         cb_recovery_timeout = cfg.get("circuit_breaker_recovery_timeout", 60.0)
+        rate_limits = cfg.get("rate_limit_requests_per_minute", {})
+        default_rate_limit = rate_limits.get("default", 60)
         for model in self.models:
             self._circuit_breakers[model] = CircuitBreaker(
                 failure_threshold=cb_failure_threshold,
                 recovery_timeout=cb_recovery_timeout,
             )
+            rpm = rate_limits.get(model, default_rate_limit)
+            self._rate_limiters[model] = AsyncSlidingWindowRateLimiter(
+                max_requests=rpm, window_seconds=60
+            )
 
     @property
     def enabled(self) -> bool:
         return bool(self.api_key)
+
+    def _get_cache_key(self, model: str, system: str, user: str) -> str:
+        """Generate cache key based on configuration."""
+        if self.use_content_only_cache_key:
+            import hashlib
+            return hashlib.sha256(user.encode()).hexdigest()
+        import hashlib
+        return hashlib.sha256(f"{model}|{system}|{user}".encode()).hexdigest()
 
     async def summarize(
         self, session: aiohttp.ClientSession, title: str, content: str
@@ -70,7 +87,26 @@ class LLMClient:
                 )
                 continue
 
-            cached = self.cache.get(model, self.system_prompt, user_msg)
+            rate_limiter = self._rate_limiters.get(model)
+            if rate_limiter:
+                wait_time = await rate_limiter.wait_time()
+                if wait_time > 0:
+                    logger.debug(
+                        "rate_limit_wait",
+                        model=model,
+                        wait_seconds=wait_time,
+                    )
+                    await asyncio.sleep(wait_time)
+                if not await rate_limiter.allow_request():
+                    logger.warning(
+                        "rate_limit_exceeded",
+                        model=model,
+                        action="skipping_model",
+                    )
+                    continue
+
+            cache_key = self._get_cache_key(model, self.system_prompt, user_msg)
+            cached = self.cache.get_by_key(cache_key)
             if cached:
                 return cached, None
 
@@ -78,7 +114,7 @@ class LLMClient:
             if result:
                 if cb:
                     await cb.record_success()
-                self.cache.put(model, self.system_prompt, user_msg, result)
+                self.cache.put_by_key(cache_key, result)
                 await asyncio.sleep(self.request_delay)
                 return result, None
             if cb:
@@ -194,7 +230,26 @@ class LLMClient:
                 )
                 continue
 
-            cached = self.cache.get(model, self.system_prompt, user_msg)
+            rate_limiter = self._rate_limiters.get(model)
+            if rate_limiter:
+                wait_time = await rate_limiter.wait_time()
+                if wait_time > 0:
+                    logger.debug(
+                        "rate_limit_wait",
+                        model=model,
+                        wait_seconds=wait_time,
+                    )
+                    await asyncio.sleep(wait_time)
+                if not await rate_limiter.allow_request():
+                    logger.warning(
+                        "rate_limit_exceeded",
+                        model=model,
+                        action="skipping_model",
+                    )
+                    continue
+
+            cache_key = self._get_cache_key(model, self.system_prompt, user_msg)
+            cached = self.cache.get_by_key(cache_key)
             if cached:
                 try:
                     return json.loads(cached), None
@@ -207,7 +262,7 @@ class LLMClient:
                     await cb.record_success()
                 try:
                     data = json.loads(result)
-                    self.cache.put(model, self.system_prompt, user_msg, result)
+                    self.cache.put_by_key(cache_key, result)
                     await asyncio.sleep(self.request_delay)
                     return data, None
                 except json.JSONDecodeError as e:
@@ -276,7 +331,16 @@ class LLMClient:
     ) -> list[dict]:
         """Process batch with fallback to individual calls."""
         for model in self.models:
-            cached = self.cache.get(model, self.system_prompt, prompt)
+            rate_limiter = self._rate_limiters.get(model)
+            if rate_limiter:
+                wait_time = await rate_limiter.wait_time()
+                if wait_time > 0:
+                    await asyncio.sleep(wait_time)
+                if not await rate_limiter.allow_request():
+                    continue
+
+            cache_key = self._get_cache_key(model, self.system_prompt, prompt)
+            cached = self.cache.get_by_key(cache_key)
             if cached:
                 try:
                     data = json.loads(cached)
@@ -288,7 +352,7 @@ class LLMClient:
             if result:
                 try:
                     data = json.loads(result)
-                    self.cache.put(model, self.system_prompt, prompt, result)
+                    self.cache.put_by_key(cache_key, result)
                     results = data.get("results", [])
                     if len(results) == batch_size:
                         return [{"summary": r.get("summary"), "error": None} for r in results]
