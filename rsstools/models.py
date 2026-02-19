@@ -12,6 +12,8 @@ class LLMConfig(BaseModel):
     max_tokens: int = 2048
     temperature: float = 0.3
     max_content_chars: int = 10000
+    max_content_tokens: int = 4000
+    token_counting_model: str = "gpt-4"
     request_delay: float = 0.5
     max_retries: int = 5
     timeout: int = 60

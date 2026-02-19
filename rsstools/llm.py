@@ -10,6 +10,7 @@ from .circuit_breaker import CircuitBreaker, CircuitState
 from .content import ContentPreprocessor
 from .logging_config import get_logger
 from .lru_cache import AsyncSlidingWindowRateLimiter
+from .tokens import TokenCounter
 
 logger = get_logger(__name__)
 
@@ -23,6 +24,9 @@ class LLMClient:
         self.max_tokens = cfg["max_tokens"]
         self.temperature = cfg["temperature"]
         self.max_content_chars = cfg["max_content_chars"]
+        self.max_content_tokens = cfg.get("max_content_tokens", 4000)
+        token_model = cfg.get("token_counting_model", "gpt-4")
+        self.token_counter = TokenCounter(token_model)
         self.request_delay = cfg["request_delay"]
         self.max_retries = cfg["max_retries"]
         self.timeout = cfg["timeout"]
@@ -31,7 +35,7 @@ class LLMClient:
         self.cache = cache
         self.api_key = cfg.get("api_key", "")
         self._lock = asyncio.Lock()
-        self.preprocessor = ContentPreprocessor()
+        self.preprocessor = ContentPreprocessor(token_model)
         self._circuit_breakers: dict[str, CircuitBreaker] = {}
         self._rate_limiters: dict[str, AsyncSlidingWindowRateLimiter] = {}
         self.use_content_only_cache_key = cfg.get("use_content_only_cache_key", False)
@@ -71,7 +75,16 @@ class LLMClient:
             return await self._call_with_fallback(session, title, content)
 
     async def _call_with_fallback(self, session, title, content):
-        cleaned = self.preprocessor.process(content)
+        cleaned, token_count = self.preprocessor.process_and_count(content)
+        if token_count > self.max_content_tokens:
+            cleaned, token_count = self.preprocessor.truncate_to_tokens(
+                content, self.max_content_tokens
+            )
+            logger.warning(
+                "content_truncated_tokens",
+                original_tokens=token_count,
+                max_tokens=self.max_content_tokens,
+            )
         truncated = cleaned[: self.max_content_chars]
         user_msg = self.user_prompt_template.format(title=title, content=truncated)
         last_error = None
@@ -141,12 +154,26 @@ class LLMClient:
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
         }
+        messages = [
+            {"role": "system", "content": self.system_prompt},
+            {"role": "user", "content": user_msg},
+        ]
+        input_tokens = self.token_counter.count_messages(messages)
+        if input_tokens > self.max_tokens:
+            logger.warning(
+                "input_tokens_exceed_max",
+                input_tokens=input_tokens,
+                max_tokens=self.max_tokens,
+                action="truncating_user_message",
+            )
+            available_tokens = self.max_tokens - self.token_counter.count(
+                self.system_prompt
+            ) - 10
+            user_msg = self.token_counter.truncate(user_msg, max(0, available_tokens))
+            messages[1]["content"] = user_msg
         payload = {
             "model": model,
-            "messages": [
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": user_msg},
-            ],
+            "messages": messages,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
         }
@@ -200,7 +227,16 @@ class LLMClient:
         if not self.api_key:
             return None, "LLM api_key not set"
 
-        cleaned = self.preprocessor.process(content)
+        cleaned, token_count = self.preprocessor.process_and_count(content)
+        if token_count > self.max_content_tokens:
+            cleaned, token_count = self.preprocessor.truncate_to_tokens(
+                content, self.max_content_tokens
+            )
+            logger.warning(
+                "score_content_truncated_tokens",
+                original_tokens=token_count,
+                max_tokens=self.max_content_tokens,
+            )
         truncated = cleaned[: self.max_content_chars]
         prompt = (
             f"Rate this article on 3 dimensions (1-10 scale):\n"
@@ -305,12 +341,11 @@ class LLMClient:
 
         for i in range(0, len(articles), batch_size):
             batch = articles[i : i + batch_size]
-            articles_text = "\n\n---\n\n".join(
-                [
-                    f"Index {idx}: {a['title']}\n\n{self.preprocessor.process(a['content'][:2000])}"
-                    for idx, a in enumerate(batch)
-                ]
-            )
+            articles_parts = []
+            for idx, a in enumerate(batch):
+                content = self.preprocessor.process(a["content"][:2000])
+                articles_parts.append(f"Index {idx}: {a['title']}\n\n{content}")
+            articles_text = "\n\n---\n\n".join(articles_parts)
 
             prompt = (
                 f"Summarize each article in 2-3 sentences, in the same language as the article.\n"

@@ -10,6 +10,7 @@ trafilatura>=1.8
 structlog>=24.0
 pydantic>=2.0
 python-dotenv>=1.0
+tiktoken>=0.5
 
 pytest>=8.0
 pytest-asyncio>=0.23
