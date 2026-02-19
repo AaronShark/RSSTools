@@ -20,11 +20,12 @@ from rich.table import Table
 
 from .cache import LLMCache
 from .context import set_correlation_id
+from .database import Database
 from .downloader import ArticleDownloader
-from .index import IndexManager
 from .llm import LLMClient
 from .logging_config import get_logger
 from .migrate import cmd_migrate
+from .repositories import ArticleRepository, CacheRepository, FeedRepository
 from .utils import extract_front_matter, parse_opml, rebuild_front_matter
 
 console = Console()
@@ -36,9 +37,17 @@ async def cmd_download(cfg: dict, force: bool = False):
     set_correlation_id()
     base_dir = cfg["base_dir"]
     opml_path = cfg["opml_path"]
-    index = IndexManager(base_dir)
-    cache = LLMCache(os.path.join(base_dir, ".llm_cache"))
-    llm = LLMClient(cfg["llm"], cache)
+
+    db_path = os.path.join(base_dir, "rsstools.db")
+    db = Database(db_path)
+    await db.connect()
+
+    article_repo = ArticleRepository(db)
+    feed_repo = FeedRepository(db)
+    cache_repo = CacheRepository(db)
+
+    llm_cache = LLMCache(os.path.join(base_dir, ".llm_cache"))
+    llm = LLMClient(cfg["llm"], llm_cache)
 
     if not llm.enabled:
         logger.warning("llm_disabled", reason="api_key_not_set")
@@ -49,10 +58,11 @@ async def cmd_download(cfg: dict, force: bool = False):
     feeds = parse_opml(opml_path)
     if not feeds:
         console.print("[red]No feeds found[/red]")
+        await db.close()
         return
     console.print(f"Found {len(feeds)} feeds")
 
-    downloader = ArticleDownloader(cfg, index, llm, force=force)
+    downloader = ArticleDownloader(cfg, article_repo, feed_repo, llm, force=force)
     concurrent_feeds = cfg["download"]["concurrent_feeds"]
     etag_max_age = cfg["download"].get("etag_max_age_days", 30)
 
@@ -66,14 +76,13 @@ async def cmd_download(cfg: dict, force: bool = False):
                 tag = feed["title"][:25]
                 console.print(f"\n[{idx}/{len(feeds)}] {feed['title']}")
                 url = feed["url"]
-                if not force and index.should_skip_feed(url, cfg["download"]["max_retries"]):
+                if not force and await feed_repo.should_skip(url, cfg["download"]["max_retries"]):
                     console.print(
                         f"  [{tag}] [yellow]Skipped (previously failed, retry after 24h)[/yellow]"
                     )
                     return
                 try:
-                    # Build conditional request headers from cached ETag/Last-Modified
-                    etag_info = index.get_feed_etag(url, max_age_days=etag_max_age)
+                    etag_info = await cache_repo.get_etag(url, max_age_days=etag_max_age)
                     cond_headers = {}
                     if etag_info.get("etag"):
                         cond_headers["If-None-Match"] = etag_info["etag"]
@@ -84,19 +93,16 @@ async def cmd_download(cfg: dict, force: bool = False):
                         session, url, extra_headers=cond_headers if cond_headers else None
                     )
                     if feed_content == "" and error is None:
-                        # 304 Not Modified — feed unchanged
                         console.print(f"  [{tag}] [dim]Not modified (skipped)[/dim]")
                         return
                     if not feed_content:
                         logger.error("feed_fetch_failed", feed=tag, error=error)
                         console.print(f"  [{tag}] [red]Cannot fetch feed: {error}[/red]")
-                        index.record_feed_failure(url, error or "Cannot fetch")
+                        await feed_repo.record_failure(url, error or "Cannot fetch")
                         return
-                    # Feed fetched successfully — clear any previous failure record
-                    index.clear_feed_failure(url)
-                    # Store ETag/Last-Modified for next run
+                    await feed_repo.clear_failure(url)
                     if resp_headers.get("etag") or resp_headers.get("last_modified"):
-                        index.set_feed_etag(
+                        await cache_repo.set_etag(
                             url, resp_headers.get("etag", ""), resp_headers.get("last_modified", "")
                         )
                     parsed = feedparser.parse(feed_content)
@@ -124,13 +130,12 @@ async def cmd_download(cfg: dict, force: bool = False):
                 except Exception as e:
                     logger.error("feed_process_error", feed=tag, error=str(e))
                     console.print(f"  [{tag}] [red]Error: {e}[/red]")
-                    index.record_feed_failure(url, str(e))
+                    await feed_repo.record_failure(url, str(e))
 
         tasks = [process_feed(f, i) for i, f in enumerate(feeds, 1)]
         await asyncio.gather(*tasks)
 
-    index.flush()
-    stats = index.get_stats()
+    stats = await article_repo.get_stats()
     logger.info(
         "download_complete",
         downloaded=downloader.downloaded,
@@ -147,6 +152,8 @@ async def cmd_download(cfg: dict, force: bool = False):
         )
     )
 
+    await db.close()
+
     log_path = os.path.join(base_dir, "download.log")
     try:
         with open(log_path, "w", encoding="utf-8") as f:
@@ -159,26 +166,28 @@ async def cmd_summarize(cfg: dict, force: bool = False):
     """Batch generate summaries for existing articles."""
     set_correlation_id()
     base_dir = cfg["base_dir"]
-    index = IndexManager(base_dir)
-    cache = LLMCache(os.path.join(base_dir, ".llm_cache"))
-    llm = LLMClient(cfg["llm"], cache)
+
+    db_path = os.path.join(base_dir, "rsstools.db")
+    db = Database(db_path)
+    await db.connect()
+
+    article_repo = ArticleRepository(db)
+    feed_repo = FeedRepository(db)
+
+    llm_cache = LLMCache(os.path.join(base_dir, ".llm_cache"))
+    llm = LLMClient(cfg["llm"], llm_cache)
 
     if not llm.enabled:
         logger.error("summarize_failed", reason="llm_api_key_not_set")
         console.print("[red]LLM api_key not set (config llm.api_key or env GLM_API_KEY)[/red]")
+        await db.close()
         return
 
-    articles = index.data.get("articles", {})
+    articles = await article_repo.list_all(limit=10000)
     if force:
-        to_summarize = [
-            {"url": url, **meta} for url, meta in articles.items() if "filepath" in meta
-        ]
+        to_summarize = [a for a in articles if a.get("filepath")]
     else:
-        to_summarize = [
-            {"url": url, **meta}
-            for url, meta in articles.items()
-            if "summary" not in meta and "filepath" in meta
-        ]
+        to_summarize = [a for a in articles if not a.get("summary") and a.get("filepath")]
     total = len(articles)
     pending = len(to_summarize)
     logger.info("summarize_started", total=total, pending=pending)
@@ -186,10 +195,10 @@ async def cmd_summarize(cfg: dict, force: bool = False):
 
     if not to_summarize:
         console.print("[green]All articles already have summaries.[/green]")
+        await db.close()
         return
 
     counters = {"summarized": 0, "scored": 0, "failed": 0}
-    save_every = cfg["summarize"]["save_every"]
 
     async with aiohttp.ClientSession() as session:
         with Progress(
@@ -252,15 +261,14 @@ async def cmd_summarize(cfg: dict, force: bool = False):
                             progress.advance(task_id)
                             continue
 
-                        index.data["articles"][url]["summary"] = summary
-                        index._dirty = True
+                        await article_repo.update(url, {"summary": summary})
                         counters["summarized"] += 1
 
                         scores, score_error = await llm.score_and_classify(
                             session, article["title"], article["body"]
                         )
                         if scores:
-                            index.update_article_scores(
+                            await article_repo.update(
                                 url,
                                 {
                                     "score_relevance": scores.get("relevance"),
@@ -280,16 +288,13 @@ async def cmd_summarize(cfg: dict, force: bool = False):
                             progress.console.print(
                                 f"    [yellow]OK (no scores)[/yellow] {article['title'][:40]}..."
                             )
-
-                        if counters["summarized"] % save_every == 0:
-                            index.flush()
                     else:
                         counters["failed"] += 1
                         if error:
                             progress.console.print(
                                 f"    [red]FAIL[/red] {article['title'][:40]}: {error}"
                             )
-                        index.record_summary_failure(
+                        await feed_repo.record_summary_failure(
                             url, article["title"], article["filepath"], error or "Unknown"
                         )
 
@@ -301,7 +306,7 @@ async def cmd_summarize(cfg: dict, force: bool = False):
                         description=f"Done: {done}, Remaining: {remaining}, Failed: {counters['failed']}",
                     )
 
-    index.flush()
+    await db.close()
     logger.info(
         "summarize_complete",
         summarized=counters["summarized"],
@@ -314,22 +319,30 @@ async def cmd_summarize(cfg: dict, force: bool = False):
     )
 
 
-def cmd_failed(cfg: dict):
+async def cmd_failed(cfg: dict):
     """Generate OPML for feeds with no successfully downloaded articles."""
     base_dir = cfg["base_dir"]
     opml_path = cfg["opml_path"]
-    index = IndexManager(base_dir)
+
+    db_path = os.path.join(base_dir, "rsstools.db")
+    db = Database(db_path)
+    await db.connect()
+
+    article_repo = ArticleRepository(db)
+    feed_repo = FeedRepository(db)
+
     output_path = os.path.join(base_dir, "failed_feeds.opml")
 
     all_feeds = parse_opml(opml_path)
     if not all_feeds:
+        await db.close()
         return
     console.print(f"Total feeds in OPML: {len(all_feeds)}")
 
-    # Find feeds that have at least one downloaded article
+    articles = await article_repo.list_all(limit=10000)
     successful_urls = set()
-    for meta in index.data.get("articles", {}).values():
-        feed_url = meta.get("feed_url")
+    for article in articles:
+        feed_url = article.get("feed_url")
         if feed_url:
             successful_urls.add(feed_url)
 
@@ -337,7 +350,7 @@ def cmd_failed(cfg: dict):
     never_tried = []
     for f in all_feeds:
         if f["url"] not in successful_urls:
-            failure_info = index.get_feed_failure_info(f["url"])
+            failure_info = await feed_repo.get_failure(f["url"])
             if failure_info:
                 failed_feeds.append({**f, "failure_info": failure_info})
             else:
@@ -355,7 +368,6 @@ def cmd_failed(cfg: dict):
     for f in never_tried:
         console.print(f"  - [yellow]{f['title']}[/yellow]: {f['url']}")
 
-    # Generate OPML
     lines = [
         '<?xml version="1.0" encoding="UTF-8"?>',
         '<opml version="1.1">',
@@ -386,25 +398,31 @@ def cmd_failed(cfg: dict):
         fp.write("\n".join(lines))
     console.print(f"\nOPML written to: {output_path}")
 
+    await db.close()
 
-def cmd_stats(cfg: dict):
+
+async def cmd_stats(cfg: dict):
     """Show knowledge base statistics."""
     base_dir = cfg["base_dir"]
-    index = IndexManager(base_dir)
-    stats = index.get_stats()
 
-    articles = index.data.get("articles", {})
-    # Article length stats
+    db_path = os.path.join(base_dir, "rsstools.db")
+    db = Database(db_path)
+    await db.connect()
+
+    article_repo = ArticleRepository(db)
+
+    stats = await article_repo.get_stats()
+
+    articles = await article_repo.list_all(limit=10000)
     lengths = []
-    for meta in articles.values():
-        fp = os.path.join(base_dir, meta.get("filepath", ""))
+    for article in articles:
+        fp = os.path.join(base_dir, article.get("filepath", ""))
         if os.path.exists(fp):
             lengths.append(os.path.getsize(fp))
 
-    # Sources breakdown
     sources = {}
-    for meta in articles.values():
-        src = meta.get("source_name", "Unknown")
+    for article in articles:
+        src = article.get("source_name", "Unknown")
         sources[src] = sources.get(src, 0) + 1
 
     table = Table(title="RSSKB Statistics", show_header=False, border_style="blue")
@@ -423,7 +441,6 @@ def cmd_stats(cfg: dict):
     table.add_row("Unique sources", str(len(sources)))
     console.print(table)
 
-    # Top sources
     if sources:
         top = sorted(sources.items(), key=lambda x: -x[1])[:10]
         src_table = Table(title="Top 10 Sources", show_header=True, border_style="blue")
@@ -432,6 +449,8 @@ def cmd_stats(cfg: dict):
         for name, count in top:
             src_table.add_row(name[:40], str(count))
         console.print(src_table)
+
+    await db.close()
 
 
 def cmd_config(cfg: dict):

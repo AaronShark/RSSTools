@@ -1,7 +1,14 @@
-"""Index management for articles"""
+"""Index management for articles
+
+DEPRECATED: This module is deprecated. Use repositories instead:
+- ArticleRepository for article CRUD operations
+- FeedRepository for failure tracking
+- CacheRepository for ETag caching
+"""
 
 import json
 import os
+import warnings
 from datetime import UTC, datetime
 
 from .logging_config import get_logger
@@ -10,10 +17,22 @@ from .utils import _parse_date_flexible
 logger = get_logger(__name__)
 
 
+def _emit_deprecation_warning():
+    warnings.warn(
+        "IndexManager is deprecated. Use ArticleRepository, FeedRepository, and CacheRepository instead.",
+        DeprecationWarning,
+        stacklevel=3,
+    )
+
+
 class IndexManager:
-    """Unified index: metadata, dedup, failure records in index.json."""
+    """Unified index: metadata, dedup, failure records in index.json.
+
+    DEPRECATED: Use ArticleRepository, FeedRepository, and CacheRepository instead.
+    """
 
     def __init__(self, base_dir: str):
+        _emit_deprecation_warning()
         self.index_path = os.path.join(base_dir, "index.json")
         self.data = self._load()
         self._dirty = False

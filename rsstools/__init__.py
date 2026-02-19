@@ -3,11 +3,12 @@
 from .cache import LLMCache
 from .config import DEFAULT_CONFIG, load_config
 from .content import ContentPreprocessor
+from .database import Database
 from .downloader import ArticleDownloader
-from .index import IndexManager
 from .llm import LLMClient
 from .models import Config, DownloadConfig, LLMConfig, SummarizeConfig
 from .reader import run_reader
+from .repositories import ArticleRepository, CacheRepository, FeedRepository
 from .utils import (
     extract_front_matter,
     parse_date_prefix,
@@ -26,7 +27,10 @@ __all__ = [
     "LLMCache",
     "ContentPreprocessor",
     "LLMClient",
-    "IndexManager",
+    "Database",
+    "ArticleRepository",
+    "FeedRepository",
+    "CacheRepository",
     "ArticleDownloader",
     "safe_dirname",
     "parse_date_prefix",
@@ -35,3 +39,16 @@ __all__ = [
     "rebuild_front_matter",
     "run_reader",
 ]
+
+
+def __getattr__(name: str):
+    if name == "IndexManager":
+        import warnings
+        from .index import IndexManager
+        warnings.warn(
+            "IndexManager is deprecated. Use ArticleRepository, FeedRepository, and CacheRepository instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        return IndexManager
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

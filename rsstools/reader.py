@@ -1,5 +1,6 @@
 """TUI Reader for RSS articles using Textual"""
 
+import asyncio
 import json
 import os
 import re
@@ -7,7 +8,8 @@ import warnings
 import webbrowser
 from datetime import datetime
 
-# Suppress dateutil timezone warnings
+import aiosqlite
+
 warnings.filterwarnings("ignore", message=".*tzname.*identified but not understood.*")
 
 from textual.app import App, ComposeResult
@@ -16,6 +18,9 @@ from textual.containers import Container, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import ModalScreen
 from textual.widgets import Footer, Header, Input, Label, Static
+
+from .database import Database
+from .repositories import ArticleRepository
 
 # Nord Color Scheme
 NORD = {
@@ -299,7 +304,6 @@ class RSSReaderApp(App):
 
     CSS = CSS
 
-    # Enable Command Palette but hide search input
     ENABLE_COMMAND_PALETTE = True
 
     BINDINGS = [
@@ -321,10 +325,11 @@ class RSSReaderApp(App):
     page = reactive(0)
     selected_index = reactive(0)
 
-    def __init__(self, json_path: str):
+    def __init__(self, base_dir: str):
         super().__init__()
-        self.json_path = os.path.expanduser(json_path)
-        self.base_dir = os.path.dirname(os.path.dirname(self.json_path))
+        self.base_dir = os.path.expanduser(base_dir)
+        self.db: Database | None = None
+        self.article_repo: ArticleRepository | None = None
         self.articles: list[dict] = []
         self.filtered_articles: list[dict] = []
         self.per_page = 5
@@ -334,49 +339,32 @@ class RSSReaderApp(App):
         self.date_end = ""
         self.min_date = None
         self.max_date = None
-        self.load_articles()
 
-    def load_articles(self):
-        """Load and sort articles from JSON"""
-        try:
-            with open(self.json_path, encoding="utf-8") as f:
-                data = json.load(f)
+    async def load_articles(self):
+        """Load and sort articles from database"""
+        db_path = os.path.join(self.base_dir, "rsstools.db")
+        self.db = Database(db_path)
+        await self.db.connect()
+        self.article_repo = ArticleRepository(self.db)
 
-            articles = []
-            for url, info in data.get("articles", {}).items():
-                articles.append(
-                    {
-                        "url": url,
-                        "title": info.get("title", "No Title"),
-                        "published": info.get("published", ""),
-                        "source_name": info.get("source_name", "Unknown"),
-                        "summary": info.get("summary", "No summary available."),
-                        "category": info.get("category", ""),
-                        "score_relevance": info.get("score_relevance"),
-                        "score_quality": info.get("score_quality"),
-                        "score_timeliness": info.get("score_timeliness"),
-                        "keywords": info.get("keywords", []),
-                    }
-                )
+        articles = await self.article_repo.list_all(limit=10000)
 
-            self.articles = sorted(
-                articles, key=lambda x: self._parse_date(x["published"]), reverse=True
-            )
-            self.filtered_articles = self.articles[:]
-            self.message = f"Loaded {len(self.articles)} articles"
+        self.articles = sorted(
+            articles, key=lambda x: self._parse_date(x.get("published", "")), reverse=True
+        )
+        self.filtered_articles = self.articles[:]
+        self.message = f"Loaded {len(self.articles)} articles"
 
-            # Find min and max dates
-            if self.articles:
-                dates = [self._parse_date(a["published"]) for a in self.articles]
-                dates = [d for d in dates if d != datetime.min]
-                if dates:
-                    self.min_date = min(dates).strftime("%Y-%m-%d")
-                    self.max_date = max(dates).strftime("%Y-%m-%d")
+        if self.articles:
+            dates = [self._parse_date(a.get("published", "")) for a in self.articles]
+            dates = [d for d in dates if d != datetime.min]
+            if dates:
+                self.min_date = min(dates).strftime("%Y-%m-%d")
+                self.max_date = max(dates).strftime("%Y-%m-%d")
 
-        except FileNotFoundError:
-            self.message = f"Error: File not found: {self.json_path}"
-        except json.JSONDecodeError:
-            self.message = "Error: Invalid JSON format"
+    async def on_mount(self):
+        await self.load_articles()
+        self._update_articles()
 
     def _parse_date(self, date_str: str) -> datetime:
         """Parse various date formats"""
@@ -416,68 +404,46 @@ class RSSReaderApp(App):
         return sorted(articles, key=lambda x: self._get_article_score(x), reverse=True)
 
     def _match_search(self, article: dict, query: str) -> bool:
-        """
-        Match article against search query.
-        Searches in: title, summary, keywords, body (loaded on demand)
-        Supports:
-        - Single word: ai
-        - Multiple words (AND): ai python
-        - Quoted phrases: "machine learning"
-        - OR operator: ai OR ml
-        - NOT operator: ai -python
-        """
         if not query:
             return True
 
-        # Build searchable text: title + summary + keywords + body
-        text_parts = [article["title"], article["summary"]]
+        text_parts = [article.get("title", ""), article.get("summary", "")]
 
-        # Add keywords
         keywords = article.get("keywords", [])
         if keywords:
             text_parts.append(" ".join(keywords))
 
-        # Load body on demand (only during search)
         body = self._load_article_body(article.get("filepath", ""))
         if body:
             text_parts.append(body)
 
         text = " ".join(text_parts).lower()
 
-        # Parse query
         query = query.strip()
 
-        # Handle OR first (split by OR)
         if " or " in query.lower():
             parts = re.split(r"\s+or\s+", query, flags=re.IGNORECASE)
             return any(self._match_search(article, p.strip()) for p in parts)
 
-        # Handle NOT (words starting with -)
         not_words = re.findall(r"-(\w+)", query)
         for word in not_words:
             if word.lower() in text:
                 return False
 
-        # Remove NOT words from query
         query = re.sub(r"-\w+\s*", "", query).strip()
 
-        # Handle quoted phrases
         phrases = re.findall(r'"([^"]+)"', query)
         for phrase in phrases:
             if phrase.lower() not in text:
                 return False
 
-        # Remove quoted phrases from query
         query = re.sub(r'"[^"]+"\s*', "", query).strip()
 
-        # Remaining words (AND logic)
         if query:
             words = query.split()
             for word in words:
-                # Skip empty words
                 if not word:
                     continue
-                # Word boundary match to avoid partial matches like "ai" in "email"
                 pattern = r"\b" + re.escape(word.lower()) + r"\b"
                 if not re.search(pattern, text):
                     return False
@@ -488,17 +454,14 @@ class RSSReaderApp(App):
         """Apply search and date filters with score sorting"""
         filtered = self.articles[:]
 
-        # Search filter
         if self.search_query:
             filtered = [a for a in filtered if self._match_search(a, self.search_query)]
-            # Sort by score when searching
             filtered = self._sort_articles_by_score(filtered)
 
-        # Date filter
         if self.date_start or self.date_end:
 
             def date_match(article):
-                pub_date = self._parse_date(article["published"])
+                pub_date = self._parse_date(article.get("published", ""))
                 if self.date_start:
                     try:
                         start = datetime.strptime(self.date_start, "%Y-%m-%d")
@@ -553,9 +516,6 @@ class RSSReaderApp(App):
         if filters:
             return f"Filters: {' | '.join(filters)}"
         return "Filters: None"
-
-    def on_mount(self):
-        self._update_articles()
 
     def _update_articles(self):
         container = self.query_one("#articles-container")
@@ -908,7 +868,7 @@ class DateFilterScreen(ModalScreen):
         self.app.pop_screen()
 
 
-def run_reader(json_path: str):
+def run_reader(base_dir: str):
     """Run the TUI reader"""
-    app = RSSReaderApp(json_path)
+    app = RSSReaderApp(base_dir)
     app.run()

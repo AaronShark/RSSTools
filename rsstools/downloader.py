@@ -10,15 +10,24 @@ import aiofiles
 import aiohttp
 
 from .logging_config import get_logger
+from .repositories import ArticleRepository, FeedRepository
 from .utils import extract_content, parse_date_prefix, safe_dirname, yaml_escape
 
 logger = get_logger(__name__)
 
 
 class ArticleDownloader:
-    def __init__(self, cfg: dict, index, llm=None, force: bool = False):
+    def __init__(
+        self,
+        cfg: dict,
+        article_repo: ArticleRepository,
+        feed_repo: FeedRepository,
+        llm=None,
+        force: bool = False,
+    ):
         self.cfg = cfg
-        self.index = index
+        self.article_repo = article_repo
+        self.feed_repo = feed_repo
         self.llm = llm
         self.force = force
         self.articles_dir = os.path.join(cfg["base_dir"], "articles")
@@ -93,9 +102,9 @@ class ArticleDownloader:
             url = (entry.get("link") or entry.get("id", "")).strip()
             if not url or not url.startswith(("http://", "https://")):
                 continue
-            if not self.force and self.index.is_downloaded(url):
+            if not self.force and await self.article_repo.exists(url):
                 continue
-            if not self.force and self.index.should_skip_article(url):
+            if not self.force and await self.feed_repo.should_skip_article(url):
                 continue
             new_articles.append(
                 {
@@ -114,14 +123,13 @@ class ArticleDownloader:
         sem = asyncio.Semaphore(self.cfg["download"]["concurrent_downloads"])
         tasks = [self._download_one(session, a, sem) for a in new_articles]
         await asyncio.gather(*tasks)
-        self.index.flush()
 
     async def _download_one(self, session, article, sem):
         async with sem:
             url, title = article["url"], article["title"]
             source_name = article["source_name"]
             async with self._dedup_lock:
-                if not self.force and self.index.is_downloaded(url):
+                if not self.force and await self.article_repo.exists(url):
                     return
             try:
                 main_content, content_source = None, "page"
@@ -138,7 +146,7 @@ class ArticleDownloader:
                 if not main_content:
                     msg = error or "Cannot extract content"
                     self.failed += 1
-                    self.index.record_article_failure(url, msg)
+                    await self.feed_repo.record_article_failure(url, msg)
                     return
 
                 source_dir = os.path.join(self.articles_dir, safe_dirname(source_name))
@@ -173,7 +181,7 @@ class ArticleDownloader:
                         await f.write(text)
                 except OSError as e:
                     logger.error("write_failed", filepath=filepath, error=str(e))
-                    self.index.record_article_failure(url, f"Write error: {e}")
+                    await self.feed_repo.record_article_failure(url, f"Write error: {e}")
                     self.failed += 1
                     return
 
@@ -189,11 +197,11 @@ class ArticleDownloader:
                     }
                     if summary:
                         meta["summary"] = summary
-                    self.index.add_article(url, meta)
-                    self.index.clear_article_failure(url)
+                    await self.article_repo.add(url, meta)
+                    await self.feed_repo.clear_article_failure(url)
                 self.downloaded += 1
             except Exception as e:
                 tag = source_name[:25]
                 logger.error("download_failed", source=tag, url=url, error=str(e))
-                self.index.record_article_failure(url, str(e))
+                await self.feed_repo.record_article_failure(url, str(e))
                 self.failed += 1

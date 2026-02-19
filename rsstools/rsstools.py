@@ -69,13 +69,7 @@ def main():
     )
 
     # reader command
-    rd_parser = subparsers.add_parser("reader", help="Launch TUI reader")
-    rd_parser.add_argument(
-        "json_path",
-        nargs="?",
-        default=None,
-        help="Path to index.json (default: base_dir/index.json)",
-    )
+    subparsers.add_parser("reader", help="Launch TUI reader")
 
     # migrate command
     mig_parser = subparsers.add_parser("migrate", help="Migrate data from index.json to SQLite")
@@ -103,18 +97,15 @@ def main():
     elif args.command == "summarize":
         asyncio.run(cmd_summarize(cfg, force=args.force))
     elif args.command == "failed":
-        cmd_failed(cfg)
+        asyncio.run(cmd_failed(cfg))
     elif args.command == "stats":
-        cmd_stats(cfg)
+        asyncio.run(cmd_stats(cfg))
     elif args.command == "config":
         cmd_config(cfg)
     elif args.command == "clean-cache":
         cmd_clean_cache(cfg, max_age_days=args.days, dry_run=args.dry_run)
     elif args.command == "reader":
-        json_path = args.json_path
-        if json_path is None:
-            json_path = os.path.join(cfg["base_dir"], "index.json")
-        run_reader(json_path)
+        run_reader(cfg["base_dir"])
     elif args.command == "migrate":
         cmd_migrate(cfg, dry_run=args.dry_run, verify=args.verify)
     else:
