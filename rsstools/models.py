@@ -27,6 +27,15 @@ class LLMConfig(BaseModel):
     rate_limit_requests_per_minute: dict[str, int] = Field(default_factory=dict)
     use_content_only_cache_key: bool = False
 
+    @field_validator("models", mode="before")
+    @classmethod
+    def parse_models(cls, v: Any) -> list[str]:
+        if isinstance(v, str):
+            return [m.strip() for m in v.split(",") if m.strip()]
+        if isinstance(v, list):
+            return v
+        raise ValueError("models must be a string or list")
+
     @field_validator("models")
     @classmethod
     def models_not_empty(cls, v: list[str]) -> list[str]:
