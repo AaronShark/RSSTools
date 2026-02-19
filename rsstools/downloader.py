@@ -9,14 +9,14 @@ from typing import Dict, List, Optional, Tuple
 import aiohttp
 import aiofiles
 import feedparser
-from rich.console import Console
 
 from .utils import (
     safe_dirname, parse_date_prefix,
     extract_content, yaml_escape, yaml_unescape
 )
+from .logging_config import get_logger
 
-console = Console()
+logger = get_logger(__name__)
 
 
 class ArticleDownloader:
@@ -108,7 +108,7 @@ class ArticleDownloader:
         if not new_articles:
             return
         tag = source_name[:25]
-        console.print(f"  [{tag}] {len(new_articles)} new articles to download")
+        logger.info("download_start", source=tag, article_count=len(new_articles))
         sem = asyncio.Semaphore(self.cfg["download"]["concurrent_downloads"])
         tasks = [self._download_one(session, a, sem) for a in new_articles]
         await asyncio.gather(*tasks)
@@ -168,7 +168,7 @@ class ArticleDownloader:
                     async with aiofiles.open(filepath, 'w', encoding='utf-8') as f:
                         await f.write(text)
                 except IOError as e:
-                    console.print(f"    [red]Failed to write file: {e}[/red]")
+                    logger.error("write_failed", filepath=filepath, error=str(e))
                     self.index.record_article_failure(url, f"Write error: {e}")
                     self.failed += 1
                     return
@@ -187,6 +187,6 @@ class ArticleDownloader:
                 self.downloaded += 1
             except Exception as e:
                 tag = source_name[:25]
-                console.print(f"    [{tag}] [red]Failed: {e}[/red]")
+                logger.error("download_failed", source=tag, url=url, error=str(e))
                 self.index.record_article_failure(url, str(e))
                 self.failed += 1

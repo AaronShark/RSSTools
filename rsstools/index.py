@@ -6,6 +6,9 @@ from datetime import datetime, timezone
 from typing import Dict
 
 from .utils import _parse_date_flexible
+from .logging_config import get_logger
+
+logger = get_logger(__name__)
 
 
 class IndexManager:
@@ -25,8 +28,7 @@ class IndexManager:
                     data.setdefault(key, {})
                 return data
             except Exception as e:
-                from rich.console import Console
-                Console().print(f"  [yellow]Warning: failed to load index: {e}[/yellow]")
+                logger.warning("index_load_failed", error=str(e))
         return {'articles': {}, 'feed_failures': {}, 'article_failures': {}, 'summary_failures': {}, 'feed_etags': {}}
 
     def save(self):

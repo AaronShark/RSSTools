@@ -5,12 +5,12 @@ import json
 from typing import Optional, Tuple, Dict, List
 
 import aiohttp
-from rich.console import Console
 
 from .cache import LLMCache
 from .content import ContentPreprocessor
+from .logging_config import get_logger
 
-console = Console()
+logger = get_logger(__name__)
 
 
 class LLMClient:
@@ -63,7 +63,7 @@ class LLMClient:
             # If this model failed with 400 (content filter), skip all models
             if error and error == "Content filtered (400)":
                 return None, error
-            console.print(f"    [yellow]Model {model} failed: {error}, trying next...[/yellow]")
+            logger.warning("model_failed", model=model, error=error, action="trying_next")
 
         await asyncio.sleep(self.request_delay)
         return None, error
@@ -93,7 +93,7 @@ class LLMClient:
                         usage = data.get("usage", {})
                         total_tok = usage.get("completion_tokens", 0)
                         reasoning = usage.get("completion_tokens_details", {}).get("reasoning_tokens", 0)
-                        console.print(f"    [dim]tokens: reasoning={reasoning}, content={total_tok - reasoning}[/dim]")
+                        logger.debug("tokens_used", reasoning_tokens=reasoning, content_tokens=total_tok - reasoning)
                         result = data["choices"][0]["message"]["content"].strip()
                         if not result:
                             return None, f"Empty content (reasoning {reasoning}/{total_tok})"
@@ -106,7 +106,7 @@ class LLMClient:
             except Exception as e:
                 return None, f"Unexpected: {e}"
             wait = min(2 ** attempt * 2, 60)
-            console.print(f"    [yellow]{last_error}, retry in {wait}s ({attempt+1}/{self.max_retries})[/yellow]")
+            logger.warning("api_retry", error=last_error, wait_seconds=wait, attempt=attempt + 1, max_retries=self.max_retries)
             await asyncio.sleep(wait)
         return None, f"Gave up after {self.max_retries} retries: {last_error}"
 
@@ -154,7 +154,7 @@ class LLMClient:
 
             if error and error == "Content filtered (400)":
                 return None, error
-            console.print(f"    [yellow]Model {model} failed: {error}, trying next...[/yellow]")
+            logger.warning("score_model_failed", model=model, error=error, action="trying_next")
 
         await asyncio.sleep(self.request_delay)
         return None, error
@@ -217,11 +217,11 @@ class LLMClient:
                     if len(results) == batch_size:
                         return [{'summary': r.get('summary'), 'error': None} for r in results]
                 except json.JSONDecodeError:
-                    console.print("    [yellow]Batch JSON parse failed, trying next model[/yellow]")
+                    logger.warning("batch_json_parse_failed", action="trying_next_model")
 
             if error and error == "Content filtered (400)":
                 break
-            console.print(f"    [yellow]Batch failed with {model}: {error}, trying fallback[/yellow]")
+            logger.warning("batch_failed", model=model, error=error, action="trying_fallback")
 
         await asyncio.sleep(self.request_delay)
         return [{'summary': None, 'error': 'Batch processing failed'}] * batch_size

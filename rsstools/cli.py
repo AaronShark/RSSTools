@@ -20,12 +20,16 @@ from .llm import LLMClient
 from .index import IndexManager
 from .downloader import ArticleDownloader
 from .utils import parse_opml, extract_front_matter, rebuild_front_matter
+from .logging_config import get_logger
+from .context import set_correlation_id
 
 console = Console()
+logger = get_logger(__name__)
 
 
 async def cmd_download(cfg: dict, force: bool = False):
     """Download articles from RSS feeds."""
+    set_correlation_id()
     base_dir = cfg["base_dir"]
     opml_path = cfg["opml_path"]
     index = IndexManager(base_dir)
@@ -33,8 +37,10 @@ async def cmd_download(cfg: dict, force: bool = False):
     llm = LLMClient(cfg["llm"], cache)
 
     if not llm.enabled:
+        logger.warning("llm_disabled", reason="api_key_not_set")
         console.print("[yellow]LLM api_key not set, summaries will be skipped[/yellow]")
 
+    logger.info("download_started", feed_count=len(parse_opml(opml_path)))
     console.print(Panel.fit("RSSKB - Download Articles", style="bold blue"))
     feeds = parse_opml(opml_path)
     if not feeds:
@@ -76,6 +82,7 @@ async def cmd_download(cfg: dict, force: bool = False):
                         console.print(f"  [{tag}] [dim]Not modified (skipped)[/dim]")
                         return
                     if not feed_content:
+                        logger.error("feed_fetch_failed", feed=tag, error=error)
                         console.print(f"  [{tag}] [red]Cannot fetch feed: {error}[/red]")
                         index.record_feed_failure(url, error or "Cannot fetch")
                         return
@@ -101,9 +108,11 @@ async def cmd_download(cfg: dict, force: bool = False):
                             'published': entry.get('published', entry.get('updated', '')),
                             'content': fc,
                         })
+                    logger.info("feed_parsed", feed=tag, entry_count=len(entries))
                     console.print(f"  [{tag}] Found {len(entries)} entries", style="green")
                     await downloader.download_articles(session, entries, feed['title'], url)
                 except Exception as e:
+                    logger.error("feed_process_error", feed=tag, error=str(e))
                     console.print(f"  [{tag}] [red]Error: {e}[/red]")
                     index.record_feed_failure(url, str(e))
 
@@ -112,6 +121,7 @@ async def cmd_download(cfg: dict, force: bool = False):
 
     index.flush()
     stats = index.get_stats()
+    logger.info("download_complete", downloaded=downloader.downloaded, failed=downloader.failed, total=stats['total_articles'])
     console.print(Panel(
         f"[green]Download complete[/green]\n"
         f"  This run: {downloader.downloaded} downloaded, {downloader.failed} failed\n"
@@ -129,12 +139,14 @@ async def cmd_download(cfg: dict, force: bool = False):
 
 async def cmd_summarize(cfg: dict, force: bool = False):
     """Batch generate summaries for existing articles."""
+    set_correlation_id()
     base_dir = cfg["base_dir"]
     index = IndexManager(base_dir)
     cache = LLMCache(os.path.join(base_dir, ".llm_cache"))
     llm = LLMClient(cfg["llm"], cache)
 
     if not llm.enabled:
+        logger.error("summarize_failed", reason="llm_api_key_not_set")
         console.print("[red]LLM api_key not set (config llm.api_key or env GLM_API_KEY)[/red]")
         return
 
@@ -153,6 +165,7 @@ async def cmd_summarize(cfg: dict, force: bool = False):
         ]
     total = len(articles)
     pending = len(to_summarize)
+    logger.info("summarize_started", total=total, pending=pending)
     console.print(f"Total: {total}, already done: {total - pending}, to summarize: {pending}")
 
     if not to_summarize:
@@ -266,6 +279,7 @@ async def cmd_summarize(cfg: dict, force: bool = False):
                         description=f"Done: {done}, Remaining: {remaining}, Failed: {counters['failed']}")
 
     index.flush()
+    logger.info("summarize_complete", summarized=counters['summarized'], scored=counters['scored'], failed=counters['failed'])
     console.print(
         f"\n[green]Done![/green] Summarized: {counters['summarized']}, "
         f"Scored: {counters['scored']}, Failed: {counters['failed']}"
