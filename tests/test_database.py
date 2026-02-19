@@ -133,6 +133,13 @@ class TestArticleCRUD:
         article = await db.get_article(sample_article["url"])
         assert article["keywords"] == ["python", "testing", "sqlite"]
 
+    async def test_article_body_stored(self, db, sample_article):
+        """Test that body is stored and retrieved."""
+        sample_article["body"] = "This is the full article body text."
+        await db.add_article(sample_article)
+        article = await db.get_article(sample_article["url"])
+        assert article["body"] == "This is the full article body text."
+
     async def test_article_exists(self, db, sample_article):
         """Test checking if article exists."""
         assert not await db.article_exists(sample_article["url"])
@@ -227,6 +234,13 @@ class TestFullTextSearch:
         sample_article["keywords"] = ["artificial", "intelligence", "neural"]
         await db.add_article(sample_article)
         results = await db.search_articles("neural")
+        assert len(results) == 1
+
+    async def test_search_by_body(self, db, sample_article):
+        """Test searching by body content."""
+        sample_article["body"] = "This article discusses quantum computing and qubits"
+        await db.add_article(sample_article)
+        results = await db.search_articles("quantum computing")
         assert len(results) == 1
 
     async def test_search_no_results(self, db, sample_article):

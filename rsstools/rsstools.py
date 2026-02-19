@@ -10,6 +10,7 @@ Unified CLI for RSS article management:
   config     - Show current configuration
   clean-cache- Clean old cached LLM results
   reader     - Launch TUI reader
+  migrate    - Migrate data from index.json to SQLite
 """
 
 import argparse
@@ -22,6 +23,7 @@ from rsstools.cli import (
     cmd_config,
     cmd_download,
     cmd_failed,
+    cmd_migrate,
     cmd_stats,
     cmd_summarize,
 )
@@ -75,6 +77,19 @@ def main():
         help="Path to index.json (default: base_dir/index.json)",
     )
 
+    # migrate command
+    mig_parser = subparsers.add_parser("migrate", help="Migrate data from index.json to SQLite")
+    mig_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Show what would be migrated without writing",
+    )
+    mig_parser.add_argument(
+        "--verify",
+        action="store_true",
+        help="Verify migration integrity",
+    )
+
     args = parser.parse_args()
 
     if not args.command:
@@ -100,6 +115,8 @@ def main():
         if json_path is None:
             json_path = os.path.join(cfg["base_dir"], "index.json")
         run_reader(json_path)
+    elif args.command == "migrate":
+        cmd_migrate(cfg, dry_run=args.dry_run, verify=args.verify)
     else:
         parser.print_help()
 

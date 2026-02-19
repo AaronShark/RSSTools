@@ -77,9 +77,9 @@ class Database:
         cursor = await self._execute(
             """INSERT INTO articles (
                 url, title, source_name, feed_url, published, downloaded,
-                filepath, content_source, summary, category,
+                filepath, content_source, summary, body, category,
                 score_relevance, score_quality, score_timeliness, keywords
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
             (
                 article["url"],
                 article["title"],
@@ -90,6 +90,7 @@ class Database:
                 article.get("filepath"),
                 article.get("content_source"),
                 article.get("summary"),
+                article.get("body"),
                 article.get("category"),
                 article.get("score_relevance"),
                 article.get("score_quality"),
@@ -119,7 +120,7 @@ class Database:
                 values.append(json.dumps(value) if value else None)
             elif key in (
                 "url", "title", "source_name", "feed_url", "published",
-                "downloaded", "filepath", "content_source", "summary",
+                "downloaded", "filepath", "content_source", "summary", "body",
                 "category", "score_relevance", "score_quality", "score_timeliness"
             ):
                 set_clauses.append(f"{key} = ?")
@@ -305,6 +306,7 @@ CREATE TABLE IF NOT EXISTS articles (
     filepath TEXT,
     content_source TEXT,
     summary TEXT,
+    body TEXT,
     category TEXT,
     score_relevance INTEGER,
     score_quality INTEGER,
@@ -316,7 +318,7 @@ CREATE TABLE IF NOT EXISTS articles (
 
 -- FTS5 virtual table for full-text search
 CREATE VIRTUAL TABLE IF NOT EXISTS articles_fts USING fts5(
-    title, summary, keywords,
+    title, summary, body, keywords,
     content='articles',
     content_rowid='id',
     tokenize='porter unicode61'
@@ -324,20 +326,20 @@ CREATE VIRTUAL TABLE IF NOT EXISTS articles_fts USING fts5(
 
 -- Triggers to keep FTS in sync
 CREATE TRIGGER IF NOT EXISTS articles_ai AFTER INSERT ON articles BEGIN
-    INSERT INTO articles_fts(rowid, title, summary, keywords)
-    VALUES (new.id, new.title, new.summary, new.keywords);
+    INSERT INTO articles_fts(rowid, title, summary, body, keywords)
+    VALUES (new.id, new.title, new.summary, new.body, new.keywords);
 END;
 
 CREATE TRIGGER IF NOT EXISTS articles_ad AFTER DELETE ON articles BEGIN
-    INSERT INTO articles_fts(articles_fts, rowid, title, summary, keywords)
-    VALUES ('delete', old.id, old.title, old.summary, old.keywords);
+    INSERT INTO articles_fts(articles_fts, rowid, title, summary, body, keywords)
+    VALUES ('delete', old.id, old.title, old.summary, old.body, old.keywords);
 END;
 
 CREATE TRIGGER IF NOT EXISTS articles_au AFTER UPDATE ON articles BEGIN
-    INSERT INTO articles_fts(articles_fts, rowid, title, summary, keywords)
-    VALUES ('delete', old.id, old.title, old.summary, old.keywords);
-    INSERT INTO articles_fts(rowid, title, summary, keywords)
-    VALUES (new.id, new.title, new.summary, new.keywords);
+    INSERT INTO articles_fts(articles_fts, rowid, title, summary, body, keywords)
+    VALUES ('delete', old.id, old.title, old.summary, old.body, old.keywords);
+    INSERT INTO articles_fts(rowid, title, summary, body, keywords)
+    VALUES (new.id, new.title, new.summary, new.body, new.keywords);
 END;
 
 -- Feed failures

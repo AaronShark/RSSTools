@@ -24,6 +24,7 @@ from .downloader import ArticleDownloader
 from .index import IndexManager
 from .llm import LLMClient
 from .logging_config import get_logger
+from .migrate import cmd_migrate
 from .utils import extract_front_matter, parse_opml, rebuild_front_matter
 
 console = Console()
