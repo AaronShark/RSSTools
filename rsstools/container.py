@@ -1,13 +1,19 @@
 """Dependency injection container for RSSTools."""
 
 import os
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+import aiohttp
 
 from .cache import LLMCache
 from .database import Database
+from .http_client import HTTPClient
 from .llm import LLMClient
 from .logging_config import get_logger
 from .repositories import ArticleRepository, CacheRepository, FeedRepository
+
+if TYPE_CHECKING:
+  pass
 
 logger = get_logger(__name__)
 
@@ -23,6 +29,7 @@ class Container:
     self._cache_repo: Optional[CacheRepository] = None
     self._llm_cache: Optional[LLMCache] = None
     self._llm_client: Optional[LLMClient] = None
+    self._http_client: Optional[HTTPClient] = None
 
   @property
   def db(self) -> Database:
@@ -69,11 +76,32 @@ class Container:
         self._llm_client = LLMClient(llm_cfg, self.llm_cache)
     return self._llm_client
 
+  @property
+  def http_client(self) -> HTTPClient:
+    if self._http_client is None:
+      dl = self.config["download"]
+      self._http_client = HTTPClient(
+        total_connections=100,
+        per_host_connections=dl["concurrent_feeds"],
+        connect_timeout=float(dl["connect_timeout"]),
+        total_timeout=float(dl["timeout"]),
+        force_close=True,
+      )
+    return self._http_client
+
+  @property
+  def http_session(self) -> aiohttp.ClientSession:
+    return self.http_client.session
+
   async def connect(self) -> None:
     await self.db.connect()
+    await self.http_client.connect()
     logger.info("container_connected")
 
   async def disconnect(self) -> None:
+    if self._http_client:
+      await self._http_client.disconnect()
+      self._http_client = None
     if self._db:
       await self._db.close()
       self._db = None

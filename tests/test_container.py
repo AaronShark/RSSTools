@@ -127,3 +127,31 @@ class TestContainer:
       async with Container(config2) as c2:
         assert c1.db is not c2.db
         assert c1.article_repo is not c2.article_repo
+
+  async def test_http_client_lazy_initialization(self, config):
+    container = Container(config)
+    assert container._http_client is None
+    client = container.http_client
+    assert client is not None
+    assert container._http_client is client
+
+  async def test_http_session_raises_before_connect(self, config):
+    container = Container(config)
+    with pytest.raises(RuntimeError, match="not connected"):
+      _ = container.http_session
+
+  async def test_http_session_available_after_connect(self, config):
+    container = Container(config)
+    await container.connect()
+    session = container.http_session
+    assert session is not None
+    assert not session.closed
+    await container.disconnect()
+
+  async def test_disconnect_closes_http_client(self, config):
+    container = Container(config)
+    await container.connect()
+    assert container._http_client is not None
+    await container.disconnect()
+    assert container._http_client is None
+

@@ -23,6 +23,7 @@ from .container import Container
 from .downloader import ArticleDownloader
 from .logging_config import get_logger
 from .migrate import cmd_migrate
+from .shutdown import ShutdownManager
 from .utils import extract_front_matter, parse_opml, rebuild_front_matter
 
 console = Console()
@@ -35,7 +36,16 @@ async def cmd_download(cfg: dict, force: bool = False):
     base_dir = cfg["base_dir"]
     opml_path = cfg["opml_path"]
 
+    shutdown_manager = ShutdownManager()
+    try:
+      shutdown_manager.setup_signal_handlers()
+    except RuntimeError:
+      pass
+
     async with Container(cfg) as container:
+        if shutdown_manager.is_shutting_down:
+          return
+
         if not container.llm_client.enabled:
             logger.warning("llm_disabled", reason="api_key_not_set")
             console.print("[yellow]LLM api_key not set, summaries will be skipped[/yellow]")
@@ -52,74 +62,74 @@ async def cmd_download(cfg: dict, force: bool = False):
         concurrent_feeds = cfg["download"]["concurrent_feeds"]
         etag_max_age = cfg["download"].get("etag_max_age_days", 30)
 
-        async with aiohttp.ClientSession(
-            connector=aiohttp.TCPConnector(limit=10, force_close=True)
-        ) as session:
-            sem = asyncio.Semaphore(concurrent_feeds)
+        session = container.http_session
+        sem = asyncio.Semaphore(concurrent_feeds)
 
-            async def process_feed(feed, idx):
-                async with sem:
-                    tag = feed["title"][:25]
-                    console.print(f"\n[{idx}/{len(feeds)}] {feed['title']}")
-                    url = feed["url"]
-                    if not force and await container.feed_repo.should_skip(url, cfg["download"]["max_retries"]):
-                        console.print(
-                            f"  [{tag}] [yellow]Skipped (previously failed, retry after 24h)[/yellow]"
-                        )
+        async def process_feed(feed, idx):
+            if shutdown_manager.is_shutting_down:
+              return
+            async with sem:
+                tag = feed["title"][:25]
+                console.print(f"\n[{idx}/{len(feeds)}] {feed['title']}")
+                url = feed["url"]
+                if not force and await container.feed_repo.should_skip(url, cfg["download"]["max_retries"]):
+                    console.print(
+                        f"  [{tag}] [yellow]Skipped (previously failed, retry after 24h)[/yellow]"
+                    )
+                    return
+                try:
+                    etag_info = await container.cache_repo.get_etag(url, max_age_days=etag_max_age)
+                    cond_headers = {}
+                    if etag_info.get("etag"):
+                        cond_headers["If-None-Match"] = etag_info["etag"]
+                    if etag_info.get("last_modified"):
+                        cond_headers["If-Modified-Since"] = etag_info["last_modified"]
+
+                    feed_content, error, resp_headers = await downloader.download_with_retry(
+                        session, url, extra_headers=cond_headers if cond_headers else None
+                    )
+                    if feed_content == "" and error is None:
+                        console.print(f"  [{tag}] [dim]Not modified (skipped)[/dim]")
                         return
-                    try:
-                        etag_info = await container.cache_repo.get_etag(url, max_age_days=etag_max_age)
-                        cond_headers = {}
-                        if etag_info.get("etag"):
-                            cond_headers["If-None-Match"] = etag_info["etag"]
-                        if etag_info.get("last_modified"):
-                            cond_headers["If-Modified-Since"] = etag_info["last_modified"]
-
-                        feed_content, error, resp_headers = await downloader.download_with_retry(
-                            session, url, extra_headers=cond_headers if cond_headers else None
+                    if not feed_content:
+                        logger.error("feed_fetch_failed", feed=tag, error=error)
+                        console.print(f"  [{tag}] [red]Cannot fetch feed: {error}[/red]")
+                        await container.feed_repo.record_failure(url, error or "Cannot fetch")
+                        return
+                    await container.feed_repo.clear_failure(url)
+                    if resp_headers.get("etag") or resp_headers.get("last_modified"):
+                        await container.cache_repo.set_etag(
+                            url, resp_headers.get("etag", ""), resp_headers.get("last_modified", "")
                         )
-                        if feed_content == "" and error is None:
-                            console.print(f"  [{tag}] [dim]Not modified (skipped)[/dim]")
-                            return
-                        if not feed_content:
-                            logger.error("feed_fetch_failed", feed=tag, error=error)
-                            console.print(f"  [{tag}] [red]Cannot fetch feed: {error}[/red]")
-                            await container.feed_repo.record_failure(url, error or "Cannot fetch")
-                            return
-                        await container.feed_repo.clear_failure(url)
-                        if resp_headers.get("etag") or resp_headers.get("last_modified"):
-                            await container.cache_repo.set_etag(
-                                url, resp_headers.get("etag", ""), resp_headers.get("last_modified", "")
-                            )
-                        parsed = feedparser.parse(feed_content)
-                        if not parsed.entries:
-                            console.print(f"  [{tag}] [yellow]No entries[/yellow]")
-                            return
-                        entries = []
-                        for entry in parsed.entries:
-                            fc = ""
-                            if entry.get("content"):
-                                fc = entry["content"][0].get("value", "")
-                            elif entry.get("summary"):
-                                fc = entry["summary"]
-                            entries.append(
-                                {
-                                    "title": entry.get("title", "Unknown"),
-                                    "link": entry.get("link", ""),
-                                    "published": entry.get("published", entry.get("updated", "")),
-                                    "content": fc,
-                                }
-                            )
-                        logger.info("feed_parsed", feed=tag, entry_count=len(entries))
-                        console.print(f"  [{tag}] Found {len(entries)} entries", style="green")
-                        await downloader.download_articles(session, entries, feed["title"], url)
-                    except Exception as e:
-                        logger.error("feed_process_error", feed=tag, error=str(e))
-                        console.print(f"  [{tag}] [red]Error: {e}[/red]")
-                        await container.feed_repo.record_failure(url, str(e))
+                    parsed = feedparser.parse(feed_content)
+                    if not parsed.entries:
+                        console.print(f"  [{tag}] [yellow]No entries[/yellow]")
+                        return
+                    entries = []
+                    for entry in parsed.entries:
+                        fc = ""
+                        if entry.get("content"):
+                            fc = entry["content"][0].get("value", "")
+                        elif entry.get("summary"):
+                            fc = entry["summary"]
+                        entries.append(
+                            {
+                                "title": entry.get("title", "Unknown"),
+                                "link": entry.get("link", ""),
+                                "published": entry.get("published", entry.get("updated", "")),
+                                "content": fc,
+                            }
+                        )
+                    logger.info("feed_parsed", feed=tag, entry_count=len(entries))
+                    console.print(f"  [{tag}] Found {len(entries)} entries", style="green")
+                    await downloader.download_articles(session, entries, feed["title"], url)
+                except Exception as e:
+                    logger.error("feed_process_error", feed=tag, error=str(e))
+                    console.print(f"  [{tag}] [red]Error: {e}[/red]")
+                    await container.feed_repo.record_failure(url, str(e))
 
-            tasks = [process_feed(f, i) for i, f in enumerate(feeds, 1)]
-            await asyncio.gather(*tasks)
+        tasks = [process_feed(f, i) for i, f in enumerate(feeds, 1)]
+        await asyncio.gather(*tasks)
 
         stats = await container.article_repo.get_stats()
         logger.info(
@@ -151,7 +161,16 @@ async def cmd_summarize(cfg: dict, force: bool = False):
     set_correlation_id()
     base_dir = cfg["base_dir"]
 
+    shutdown_manager = ShutdownManager()
+    try:
+      shutdown_manager.setup_signal_handlers()
+    except RuntimeError:
+      pass
+
     async with Container(cfg) as container:
+        if shutdown_manager.is_shutting_down:
+          return
+
         if not container.llm_client.enabled:
             logger.error("summarize_failed", reason="llm_api_key_not_set")
             console.print("[red]LLM api_key not set (config llm.api_key or env GLM_API_KEY)[/red]")
@@ -173,111 +192,113 @@ async def cmd_summarize(cfg: dict, force: bool = False):
 
         counters = {"summarized": 0, "scored": 0, "failed": 0}
 
-        async with aiohttp.ClientSession() as session:
-            with Progress(
-                SpinnerColumn(),
-                TextColumn("[progress.description]{task.description}"),
-                BarColumn(),
-                MofNCompleteColumn(),
-                console=console,
-            ) as progress:
-                task_id = progress.add_task(f"Done: 0, Remaining: {pending}, Failed: 0", total=pending)
+        session = container.http_session
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            MofNCompleteColumn(),
+            console=console,
+        ) as progress:
+            task_id = progress.add_task(f"Done: 0, Remaining: {pending}, Failed: 0", total=pending)
 
-                for i in range(0, len(to_summarize), 10):
-                    batch = to_summarize[i : i + 10]
+            for i in range(0, len(to_summarize), 10):
+                if shutdown_manager.is_shutting_down:
+                  break
+                batch = to_summarize[i : i + 10]
 
-                    batch_articles = []
-                    for article in batch:
-                        filepath = os.path.join(base_dir, article["filepath"])
-                        if not os.path.exists(filepath):
-                            continue
-                        try:
-                            async with aiofiles.open(filepath, encoding="utf-8") as f:
-                                text = await f.read()
-                            fm, body = extract_front_matter(text)
-                            if fm is not None:
-                                batch_articles.append(
-                                    {
-                                        "filepath": filepath,
-                                        "url": article["url"],
-                                        "title": article.get("title", ""),
-                                        "body": body.strip(),
-                                        "fm": fm,
-                                    }
-                                )
-                        except OSError:
-                            pass
-
-                    if not batch_articles:
+                batch_articles = []
+                for article in batch:
+                    filepath = os.path.join(base_dir, article["filepath"])
+                    if not os.path.exists(filepath):
                         continue
-
-                    batch_summaries = await container.llm_client.summarize_batch(
-                        session, [{"title": a["title"], "content": a["body"]} for a in batch_articles]
-                    )
-
-                    for article, result in zip(batch_articles, batch_summaries):
-                        url = article["url"]
-                        summary = result.get("summary")
-                        error = result.get("error")
-
-                        if summary:
-                            article["fm"]["summary"] = summary
-                            new_text = rebuild_front_matter(article["fm"], article["body"])
-                            try:
-                                async with aiofiles.open(
-                                    article["filepath"], "w", encoding="utf-8"
-                                ) as f:
-                                    await f.write(new_text)
-                            except OSError as e:
-                                counters["failed"] += 1
-                                progress.console.print(f"    [red]Write error: {e}[/red]")
-                                progress.advance(task_id)
-                                continue
-
-                            await container.article_repo.update(url, {"summary": summary})
-                            counters["summarized"] += 1
-
-                            scores, score_error = await container.llm_client.score_and_classify(
-                                session, article["title"], article["body"]
+                    try:
+                        async with aiofiles.open(filepath, encoding="utf-8") as f:
+                            text = await f.read()
+                        fm, body = extract_front_matter(text)
+                        if fm is not None:
+                            batch_articles.append(
+                                {
+                                    "filepath": filepath,
+                                    "url": article["url"],
+                                    "title": article.get("title", ""),
+                                    "body": body.strip(),
+                                    "fm": fm,
+                                }
                             )
-                            if scores:
-                                await container.article_repo.update(
-                                    url,
-                                    {
-                                        "score_relevance": scores.get("relevance"),
-                                        "score_quality": scores.get("quality"),
-                                        "score_timeliness": scores.get("timeliness"),
-                                        "category": scores.get("category"),
-                                        "keywords": scores.get("keywords", []),
-                                    },
-                                )
-                                counters["scored"] += 1
-                                progress.console.print(
-                                    f"    [green]OK[/green] {article['title'][:40]}... "
-                                    f"[dim]({scores.get('category')}, "
-                                    f"{scores.get('relevance', 0)}/{scores.get('quality', 0)}/{scores.get('timeliness', 0)})[/dim]"
-                                )
-                            else:
-                                progress.console.print(
-                                    f"    [yellow]OK (no scores)[/yellow] {article['title'][:40]}..."
-                                )
-                        else:
+                    except OSError:
+                        pass
+
+                if not batch_articles:
+                    continue
+
+                batch_summaries = await container.llm_client.summarize_batch(
+                    session, [{"title": a["title"], "content": a["body"]} for a in batch_articles]
+                )
+
+                for article, result in zip(batch_articles, batch_summaries):
+                    url = article["url"]
+                    summary = result.get("summary")
+                    error = result.get("error")
+
+                    if summary:
+                        article["fm"]["summary"] = summary
+                        new_text = rebuild_front_matter(article["fm"], article["body"])
+                        try:
+                            async with aiofiles.open(
+                                article["filepath"], "w", encoding="utf-8"
+                            ) as f:
+                                await f.write(new_text)
+                        except OSError as e:
                             counters["failed"] += 1
-                            if error:
-                                progress.console.print(
-                                    f"    [red]FAIL[/red] {article['title'][:40]}: {error}"
-                                )
-                            await container.feed_repo.record_summary_failure(
-                                url, article["title"], article["filepath"], error or "Unknown"
-                            )
+                            progress.console.print(f"    [red]Write error: {e}[/red]")
+                            progress.advance(task_id)
+                            continue
 
-                        progress.advance(task_id)
-                        done = counters["summarized"]
-                        remaining = pending - done - counters["failed"]
-                        progress.update(
-                            task_id,
-                            description=f"Done: {done}, Remaining: {remaining}, Failed: {counters['failed']}",
+                        await container.article_repo.update(url, {"summary": summary})
+                        counters["summarized"] += 1
+
+                        scores, score_error = await container.llm_client.score_and_classify(
+                            session, article["title"], article["body"]
                         )
+                        if scores:
+                            await container.article_repo.update(
+                                url,
+                                {
+                                    "score_relevance": scores.get("relevance"),
+                                    "score_quality": scores.get("quality"),
+                                    "score_timeliness": scores.get("timeliness"),
+                                    "category": scores.get("category"),
+                                    "keywords": scores.get("keywords", []),
+                                },
+                            )
+                            counters["scored"] += 1
+                            progress.console.print(
+                                f"    [green]OK[/green] {article['title'][:40]}... "
+                                f"[dim]({scores.get('category')}, "
+                                f"{scores.get('relevance', 0)}/{scores.get('quality', 0)}/{scores.get('timeliness', 0)})[/dim]"
+                            )
+                        else:
+                            progress.console.print(
+                                f"    [yellow]OK (no scores)[/yellow] {article['title'][:40]}..."
+                            )
+                    else:
+                        counters["failed"] += 1
+                        if error:
+                            progress.console.print(
+                                f"    [red]FAIL[/red] {article['title'][:40]}: {error}"
+                            )
+                        await container.feed_repo.record_summary_failure(
+                            url, article["title"], article["filepath"], error or "Unknown"
+                        )
+
+                    progress.advance(task_id)
+                    done = counters["summarized"]
+                    remaining = pending - done - counters["failed"]
+                    progress.update(
+                        task_id,
+                        description=f"Done: {done}, Remaining: {remaining}, Failed: {counters['failed']}",
+                    )
 
     logger.info(
         "summarize_complete",
