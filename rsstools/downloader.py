@@ -54,13 +54,11 @@ class ArticleDownloader:
         cfg: dict,
         article_repo: ArticleRepository,
         feed_repo: FeedRepository,
-        llm=None,
         force: bool = False,
     ):
         self.cfg = cfg
         self.article_repo = article_repo
         self.feed_repo = feed_repo
-        self.llm = llm
         self.force = force
         self.articles_dir = os.path.join(cfg["base_dir"], "articles")
         os.makedirs(self.articles_dir, exist_ok=True)
@@ -211,23 +209,16 @@ class ArticleDownloader:
                 filepath = os.path.join(source_dir, filename)
                 rel_path = os.path.relpath(filepath, self.cfg["base_dir"])
 
-                summary = None
-                if self.llm and self.llm.enabled:
-                    summary, _ = await self.llm.summarize(session, title, main_content)
-
                 from datetime import datetime
 
                 now = datetime.now(UTC).isoformat()
-                summary_line = ""
-                if summary:
-                    summary_line = f"summary: {yaml_escape(summary)}\n"
                 text = (
                     f"---\n"
                     f"title: {yaml_escape(title)}\n"
                     f"source: {yaml_escape(source_name)}\nfeed_url: {yaml_escape(article['feed_url'])}\n"
                     f"url: {yaml_escape(url)}\npublished: {yaml_escape(article['published'] or 'Unknown')}\n"
                     f"downloaded: {yaml_escape(now)}\ncontent_source: {yaml_escape(content_source)}\n"
-                    f"{summary_line}---\n\n{main_content}\n"
+                    f"---\n\n{main_content}\n"
                 )
                 try:
                     async with aiofiles.open(filepath, "w", encoding="utf-8") as f:
@@ -248,14 +239,10 @@ class ArticleDownloader:
                         "filepath": rel_path,
                         "content_source": content_source,
                     }
-                    if summary:
-                        meta["summary"] = summary
                     await self.article_repo.add(url, meta)
                     await self.feed_repo.clear_article_failure(url)
                 self.downloaded += 1
                 metrics.record_download()
-                if summary:
-                    metrics.record_summarize()
             except Exception as e:
                 tag = source_name[:25]
                 logger.error("download_failed", source=tag, url=url, error=str(e))

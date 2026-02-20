@@ -46,10 +46,6 @@ async def cmd_download(cfg: dict, force: bool = False):
         if shutdown_manager.is_shutting_down:
           return
 
-        if not container.llm_client.enabled:
-            logger.warning("llm_disabled", reason="api_key_not_set")
-            console.print("[yellow]LLM api_key not set, summaries will be skipped[/yellow]")
-
         logger.info("download_started", feed_count=len(parse_opml(opml_path)))
         console.print(Panel.fit("RSSKB - Download Articles", style="bold blue"))
         feeds = parse_opml(opml_path)
@@ -58,7 +54,7 @@ async def cmd_download(cfg: dict, force: bool = False):
             return
         console.print(f"Found {len(feeds)} feeds")
 
-        downloader = ArticleDownloader(cfg, container.article_repo, container.feed_repo, container.llm_client, force=force)
+        downloader = ArticleDownloader(cfg, container.article_repo, container.feed_repo, force=force)
         concurrent_feeds = cfg["download"]["concurrent_feeds"]
         etag_max_age = cfg["download"].get("etag_max_age_days", 30)
 
