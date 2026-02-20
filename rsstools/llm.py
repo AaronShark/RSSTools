@@ -207,6 +207,8 @@ class LLMClient:
                         metrics.record_llm_request(model, latency, success=False)
                         return None, "Content filtered (400)"
                     last_error = f"HTTP {resp.status}"
+            except asyncio.CancelledError:
+                raise
             except (TimeoutError, aiohttp.ClientError, ConnectionError, OSError) as e:
                 last_error = f"{type(e).__name__}: {e}"
             except Exception as e:

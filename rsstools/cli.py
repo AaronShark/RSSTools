@@ -159,142 +159,147 @@ async def cmd_summarize(cfg: dict, force: bool = False):
 
     shutdown_manager = ShutdownManager()
     try:
-      shutdown_manager.setup_signal_handlers()
+        shutdown_manager.setup_signal_handlers()
     except RuntimeError:
-      pass
+        pass
 
-    async with Container(cfg) as container:
-        if shutdown_manager.is_shutting_down:
-          return
+    counters = {"summarized": 0, "scored": 0, "failed": 0}
 
-        if not container.llm_client.enabled:
-            logger.error("summarize_failed", reason="llm_api_key_not_set")
-            console.print("[red]LLM api_key not set (config llm.api_key or env GLM_API_KEY)[/red]")
-            return
+    try:
+        async with Container(cfg) as container:
+            if shutdown_manager.is_shutting_down:
+                return
 
-        articles = await container.article_repo.list_all(limit=10000)
-        if force:
-            to_summarize = [a for a in articles if a.get("filepath")]
-        else:
-            to_summarize = [a for a in articles if not a.get("summary") and a.get("filepath")]
-        total = len(articles)
-        pending = len(to_summarize)
-        logger.info("summarize_started", total=total, pending=pending)
-        console.print(f"Total: {total}, already done: {total - pending}, to summarize: {pending}")
+            if not container.llm_client.enabled:
+                logger.error("summarize_failed", reason="llm_api_key_not_set")
+                console.print("[red]LLM api_key not set (config llm.api_key or env GLM_API_KEY)[/red]")
+                return
 
-        if not to_summarize:
-            console.print("[green]All articles already have summaries.[/green]")
-            return
+            articles = await container.article_repo.list_all(limit=10000)
+            if force:
+                to_summarize = [a for a in articles if a.get("filepath")]
+            else:
+                to_summarize = [a for a in articles if not a.get("summary") and a.get("filepath")]
+            total = len(articles)
+            pending = len(to_summarize)
+            logger.info("summarize_started", total=total, pending=pending)
+            console.print(f"Total: {total}, already done: {total - pending}, to summarize: {pending}")
 
-        counters = {"summarized": 0, "scored": 0, "failed": 0}
+            if not to_summarize:
+                console.print("[green]All articles already have summaries.[/green]")
+                return
 
-        session = container.http_session
-        with Progress(
-            SpinnerColumn(),
-            TextColumn("[progress.description]{task.description}"),
-            BarColumn(),
-            MofNCompleteColumn(),
-            console=console,
-        ) as progress:
-            task_id = progress.add_task(f"Done: 0, Remaining: {pending}, Failed: 0", total=pending)
+            session = container.http_session
+            with Progress(
+                SpinnerColumn(),
+                TextColumn("[progress.description]{task.description}"),
+                BarColumn(),
+                MofNCompleteColumn(),
+                console=console,
+            ) as progress:
+                task_id = progress.add_task(f"Done: 0, Remaining: {pending}, Failed: 0", total=pending)
 
-            for i in range(0, len(to_summarize), 10):
-                if shutdown_manager.is_shutting_down:
-                  break
-                batch = to_summarize[i : i + 10]
+                for i in range(0, len(to_summarize), 10):
+                    if shutdown_manager.is_shutting_down:
+                        console.print("\n[yellow]Interrupted by user[/yellow]")
+                        break
+                    batch = to_summarize[i : i + 10]
 
-                batch_articles = []
-                for article in batch:
-                    filepath = os.path.join(base_dir, article["filepath"])
-                    if not os.path.exists(filepath):
-                        continue
-                    try:
-                        async with aiofiles.open(filepath, encoding="utf-8") as f:
-                            text = await f.read()
-                        fm, body = extract_front_matter(text)
-                        if fm is not None:
-                            batch_articles.append(
-                                {
-                                    "filepath": filepath,
-                                    "url": article["url"],
-                                    "title": article.get("title", ""),
-                                    "body": body.strip(),
-                                    "fm": fm,
-                                }
-                            )
-                    except OSError:
-                        pass
-
-                if not batch_articles:
-                    continue
-
-                batch_summaries = await container.llm_client.summarize_batch(
-                    session, [{"title": a["title"], "content": a["body"]} for a in batch_articles]
-                )
-
-                for article, result in zip(batch_articles, batch_summaries):
-                    url = article["url"]
-                    summary = result.get("summary")
-                    error = result.get("error")
-
-                    if summary:
-                        article["fm"]["summary"] = summary
-                        new_text = rebuild_front_matter(article["fm"], article["body"])
-                        try:
-                            async with aiofiles.open(
-                                article["filepath"], "w", encoding="utf-8"
-                            ) as f:
-                                await f.write(new_text)
-                        except OSError as e:
-                            counters["failed"] += 1
-                            progress.console.print(f"    [red]Write error: {e}[/red]")
-                            progress.advance(task_id)
+                    batch_articles = []
+                    for article in batch:
+                        filepath = os.path.join(base_dir, article["filepath"])
+                        if not os.path.exists(filepath):
                             continue
+                        try:
+                            async with aiofiles.open(filepath, encoding="utf-8") as f:
+                                text = await f.read()
+                            fm, body = extract_front_matter(text)
+                            if fm is not None:
+                                batch_articles.append(
+                                    {
+                                        "filepath": filepath,
+                                        "url": article["url"],
+                                        "title": article.get("title", ""),
+                                        "body": body.strip(),
+                                        "fm": fm,
+                                    }
+                                )
+                        except OSError:
+                            pass
 
-                        await container.article_repo.update(url, {"summary": summary})
-                        counters["summarized"] += 1
+                    if not batch_articles:
+                        continue
 
-                        scores, score_error = await container.llm_client.score_and_classify(
-                            session, article["title"], article["body"]
-                        )
-                        if scores:
-                            await container.article_repo.update(
-                                url,
-                                {
-                                    "score_relevance": scores.get("relevance"),
-                                    "score_quality": scores.get("quality"),
-                                    "score_timeliness": scores.get("timeliness"),
-                                    "category": scores.get("category"),
-                                    "keywords": scores.get("keywords", []),
-                                },
-                            )
-                            counters["scored"] += 1
-                            progress.console.print(
-                                f"    [green]OK[/green] {article['title'][:40]}... "
-                                f"[dim]({scores.get('category')}, "
-                                f"{scores.get('relevance', 0)}/{scores.get('quality', 0)}/{scores.get('timeliness', 0)})[/dim]"
-                            )
-                        else:
-                            progress.console.print(
-                                f"    [yellow]OK (no scores)[/yellow] {article['title'][:40]}..."
-                            )
-                    else:
-                        counters["failed"] += 1
-                        if error:
-                            progress.console.print(
-                                f"    [red]FAIL[/red] {article['title'][:40]}: {error}"
-                            )
-                        await container.feed_repo.record_summary_failure(
-                            url, article["title"], article["filepath"], error or "Unknown"
-                        )
-
-                    progress.advance(task_id)
-                    done = counters["summarized"]
-                    remaining = pending - done - counters["failed"]
-                    progress.update(
-                        task_id,
-                        description=f"Done: {done}, Remaining: {remaining}, Failed: {counters['failed']}",
+                    batch_summaries = await container.llm_client.summarize_batch(
+                        session, [{"title": a["title"], "content": a["body"]} for a in batch_articles]
                     )
+
+                    for article, result in zip(batch_articles, batch_summaries):
+                        url = article["url"]
+                        summary = result.get("summary")
+                        error = result.get("error")
+
+                        if summary:
+                            article["fm"]["summary"] = summary
+                            new_text = rebuild_front_matter(article["fm"], article["body"])
+                            try:
+                                async with aiofiles.open(
+                                    article["filepath"], "w", encoding="utf-8"
+                                ) as f:
+                                    await f.write(new_text)
+                            except OSError as e:
+                                counters["failed"] += 1
+                                progress.console.print(f"    [red]Write error: {e}[/red]")
+                                progress.advance(task_id)
+                                continue
+
+                            await container.article_repo.update(url, {"summary": summary})
+                            counters["summarized"] += 1
+
+                            scores, score_error = await container.llm_client.score_and_classify(
+                                session, article["title"], article["body"]
+                            )
+                            if scores:
+                                await container.article_repo.update(
+                                    url,
+                                    {
+                                        "score_relevance": scores.get("relevance"),
+                                        "score_quality": scores.get("quality"),
+                                        "score_timeliness": scores.get("timeliness"),
+                                        "category": scores.get("category"),
+                                        "keywords": scores.get("keywords", []),
+                                    },
+                                )
+                                counters["scored"] += 1
+                                progress.console.print(
+                                    f"    [green]OK[/green] {article['title'][:40]}... "
+                                    f"[dim]({scores.get('category')}, "
+                                    f"{scores.get('relevance', 0)}/{scores.get('quality', 0)}/{scores.get('timeliness', 0)})[/dim]"
+                                )
+                            else:
+                                progress.console.print(
+                                    f"    [yellow]OK (no scores)[/yellow] {article['title'][:40]}..."
+                                )
+                        else:
+                            counters["failed"] += 1
+                            if error:
+                                progress.console.print(
+                                    f"    [red]FAIL[/red] {article['title'][:40]}: {error}"
+                                )
+                            await container.feed_repo.record_summary_failure(
+                                url, article["title"], article["filepath"], error or "Unknown"
+                            )
+
+                        progress.advance(task_id)
+                        done = counters["summarized"]
+                        remaining = pending - done - counters["failed"]
+                        progress.update(
+                            task_id,
+                            description=f"Done: {done}, Remaining: {remaining}, Failed: {counters['failed']}",
+                        )
+
+    except asyncio.CancelledError:
+        console.print("\n[yellow]Interrupted by user[/yellow]")
 
     logger.info(
         "summarize_complete",
