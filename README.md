@@ -284,10 +284,10 @@ Default config file: `~/.rsstools/config.json`
     "api_key": "your-api-key",
     "host": "https://api.z.ai/api/coding/paas/v4",
     "models": ["glm-5", "glm-4.7"],
-    "max_tokens": 2048,
+    "max_tokens": 8192,
     "temperature": 0.3,
-    "max_content_chars": 10000,
-    "max_content_tokens": 4000,
+    "max_content_chars": 200000,
+    "max_content_tokens": 100000,
     "token_counting_model": "gpt-4",
     "request_delay": 0.5,
     "max_retries": 5,
@@ -326,7 +326,9 @@ Default config file: `~/.rsstools/config.json`
 | `llm.circuit_breaker_failure_threshold` | Failures before circuit opens | 5 |
 | `llm.circuit_breaker_recovery_timeout` | Seconds before retry attempt | 60.0 |
 | `llm.rate_limit_requests_per_minute` | Per-model rate limits | {} |
-| `llm.max_content_tokens` | Max tokens for content | 4000 |
+| `llm.max_tokens` | Max output tokens (for reasoning models) | 8192 |
+| `llm.max_content_tokens` | Max tokens for content input | 100000 |
+| `llm.max_content_chars` | Max characters for content | 200000 |
 | `llm.token_counting_model` | Model for token counting | "gpt-4" |
 | `download.rate_limit_per_domain` | Per-domain request limits | {} |
 | `download.ssrf_protection_enabled` | Block private IP addresses | true |
@@ -757,7 +759,7 @@ Issues and Pull Requests are welcome!
 
 ## Changelog
 
-### v3.0.0 (2026-02-19)
+### v3.0.0 (2026-02-20)
 - **SQLite Backend**: Replaced index.json with SQLite database
 - **FTS5 Full-Text Search**: BM25-ranked search across all article content
 - **Repository Pattern**: Clean separation of data access logic
@@ -770,6 +772,10 @@ Issues and Pull Requests are welcome!
 - **Export Feature**: Export filtered articles to JSON
 - **Category Filter**: Filter articles by category in TUI
 - **Sort Modes**: Multiple sort options (date, score, source, BM25)
+- **Performance**: Download and summarize are now separate (much faster downloads)
+- **Reasoning Models**: Support for chain-of-thought models (max_tokens=8192)
+- **Large Content**: Support for articles up to 100K tokens (200K chars)
+- **Graceful Interrupt**: Proper Ctrl+C handling during long operations
 
 **Migration Guide**: See [MIGRATION.md](./MIGRATION.md)
 **Architecture**: See [ARCHITECTURE.md](./ARCHITECTURE.md)
