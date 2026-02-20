@@ -67,6 +67,9 @@ class LLMConfig(BaseModel):
     def __getitem__(self, key: str) -> Any:
         return getattr(self, key)
 
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
 
 class DownloadConfig(BaseModel):
     timeout: int = 15
@@ -109,6 +112,9 @@ class DownloadConfig(BaseModel):
     def __getitem__(self, key: str) -> Any:
         return getattr(self, key)
 
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
 
 class SummarizeConfig(BaseModel):
     save_every: int = 20
@@ -123,6 +129,9 @@ class SummarizeConfig(BaseModel):
     def __getitem__(self, key: str) -> Any:
         return getattr(self, key)
 
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
+
 
 class Config(BaseModel):
     base_dir: str = "~/RSSKB"
@@ -133,3 +142,6 @@ class Config(BaseModel):
 
     def __getitem__(self, key: str) -> Any:
         return getattr(self, key)
+
+    def get(self, key: str, default: Any = None) -> Any:
+        return getattr(self, key, default)
