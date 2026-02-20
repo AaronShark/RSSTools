@@ -22,11 +22,15 @@ class LLMClient:
 
     def __init__(self, cfg: dict, cache: LLMCache):
         self.host = cfg["host"]
-        self.models = [m.strip() for m in cfg["models"].split(",")]
+        models_cfg = cfg["models"]
+        if isinstance(models_cfg, str):
+            self.models = [m.strip() for m in models_cfg.split(",")]
+        else:
+            self.models = list(models_cfg)
         self.max_tokens = cfg["max_tokens"]
         self.temperature = cfg["temperature"]
         self.max_content_chars = cfg["max_content_chars"]
-        self.max_content_tokens = cfg.get("max_content_tokens", 4000)
+        self.max_content_tokens = cfg.get("max_content_tokens", 100000)
         token_model = cfg.get("token_counting_model", "gpt-4")
         self.token_counter = TokenCounter(token_model)
         self.request_delay = cfg["request_delay"]
