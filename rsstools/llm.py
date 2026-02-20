@@ -162,19 +162,6 @@ class LLMClient:
             {"role": "system", "content": self.system_prompt},
             {"role": "user", "content": user_msg},
         ]
-        input_tokens = self.token_counter.count_messages(messages)
-        if input_tokens > self.max_tokens:
-            logger.warning(
-                "input_tokens_exceed_max",
-                input_tokens=input_tokens,
-                max_tokens=self.max_tokens,
-                action="truncating_user_message",
-            )
-            available_tokens = self.max_tokens - self.token_counter.count(
-                self.system_prompt
-            ) - 10
-            user_msg = self.token_counter.truncate(user_msg, max(0, available_tokens))
-            messages[1]["content"] = user_msg
         payload = {
             "model": model,
             "messages": messages,
