@@ -9,7 +9,7 @@ class LLMConfig(BaseModel):
     api_key: str = ""
     host: str = "https://api.z.ai/api/coding/paas/v4"
     models: list[str] = Field(default_factory=lambda: ["glm-5", "glm-4.7"])
-    max_tokens: int = 2048
+    max_tokens: int = 8192
     temperature: float = 0.3
     max_content_chars: int = 200000
     max_content_tokens: int = 100000
