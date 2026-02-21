@@ -17,6 +17,14 @@ from .tokens import TokenCounter
 logger = get_logger(__name__)
 
 
+async def cancellable_sleep(seconds: float) -> None:
+    """Sleep that can be cancelled immediately."""
+    try:
+        await asyncio.sleep(seconds)
+    except asyncio.CancelledError:
+        raise
+
+
 class LLMClient:
     """Async LLM client with multi-model fallback, retry, caching, serial execution."""
 
@@ -115,7 +123,7 @@ class LLMClient:
                         model=model,
                         wait_seconds=wait_time,
                     )
-                    await asyncio.sleep(wait_time)
+                    await cancellable_sleep(wait_time)
                 if not await rate_limiter.allow_request():
                     logger.warning(
                         "rate_limit_exceeded",
@@ -136,7 +144,7 @@ class LLMClient:
                 if cb:
                     await cb.record_success()
                 self.cache.put_by_key(cache_key, result)
-                await asyncio.sleep(self.request_delay)
+                await cancellable_sleep(self.request_delay)
                 return result, None
             if cb:
                 prev_state = cb.state
@@ -153,7 +161,7 @@ class LLMClient:
             last_error = error
             logger.warning("model_failed", model=model, error=error, action="trying_next")
 
-        await asyncio.sleep(self.request_delay)
+        await cancellable_sleep(self.request_delay)
         return None, last_error
 
     async def _call_api(self, session, model, user_msg):
@@ -223,7 +231,10 @@ class LLMClient:
                 attempt=attempt + 1,
                 max_retries=self.max_retries,
             )
-            await asyncio.sleep(wait)
+            try:
+                await asyncio.sleep(wait)
+            except asyncio.CancelledError:
+                raise
         latency = time.time() - start_time
         metrics.record_llm_request(model, latency, success=False)
         return None, f"Gave up after {self.max_retries} retries: {last_error}"
@@ -283,7 +294,7 @@ class LLMClient:
                         model=model,
                         wait_seconds=wait_time,
                     )
-                    await asyncio.sleep(wait_time)
+                    await cancellable_sleep(wait_time)
                 if not await rate_limiter.allow_request():
                     logger.warning(
                         "rate_limit_exceeded",
@@ -309,7 +320,7 @@ class LLMClient:
                 try:
                     data = json.loads(result)
                     self.cache.put_by_key(cache_key, result)
-                    await asyncio.sleep(self.request_delay)
+                    await cancellable_sleep(self.request_delay)
                     return data, None
                 except json.JSONDecodeError as e:
                     return None, f"Invalid JSON response: {e}"
@@ -329,7 +340,7 @@ class LLMClient:
             last_error = error
             logger.warning("score_model_failed", model=model, error=error, action="trying_next")
 
-        await asyncio.sleep(self.request_delay)
+        await cancellable_sleep(self.request_delay)
         return None, last_error
 
     async def summarize_batch(
@@ -377,7 +388,7 @@ class LLMClient:
             
             all_results.extend(batch_results)
 
-            await asyncio.sleep(self.request_delay)
+            await cancellable_sleep(self.request_delay)
 
         return all_results
 
@@ -390,7 +401,7 @@ class LLMClient:
             if rate_limiter:
                 wait_time = await rate_limiter.wait_time()
                 if wait_time > 0:
-                    await asyncio.sleep(wait_time)
+                    await cancellable_sleep(wait_time)
                 if not await rate_limiter.allow_request():
                     continue
 
@@ -430,7 +441,7 @@ class LLMClient:
                 break
             logger.warning("batch_failed", model=model, error=error, action="trying_fallback")
 
-        await asyncio.sleep(self.request_delay)
+        await cancellable_sleep(self.request_delay)
         return [{"summary": None, "error": "Batch processing failed"}] * batch_size
 
     def _extract_json(self, text: str) -> str | None:
