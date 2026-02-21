@@ -64,6 +64,7 @@ class ArticleDownloader:
         os.makedirs(self.articles_dir, exist_ok=True)
         self.downloaded = 0
         self.failed = 0
+        self.failures: list[dict] = []
         self._dedup_lock = asyncio.Lock()
 
         dl_cfg = cfg.get("download", {})
@@ -71,6 +72,14 @@ class ArticleDownloader:
         self.url_validator = UrlValidator()
         self.ssr_protection_enabled = dl_cfg.get("ssrf_protection_enabled", True)
         self.content_sanitization_enabled = dl_cfg.get("content_sanitization_enabled", True)
+
+    def record_feed_failure(self, title: str, url: str, error: str):
+        self.failures.append({
+            "type": "feed",
+            "url": url,
+            "title": title,
+            "error": error,
+        })
 
     async def download_with_retry(
         self, session: aiohttp.ClientSession, url: str, extra_headers: dict | None = None
@@ -197,6 +206,13 @@ class ArticleDownloader:
                 if not main_content:
                     msg = error or "Cannot extract content"
                     self.failed += 1
+                    self.failures.append({
+                        "type": "article",
+                        "url": url,
+                        "title": title,
+                        "source": source_name,
+                        "error": msg,
+                    })
                     await self.feed_repo.record_article_failure(url, msg)
                     return
 
@@ -225,6 +241,13 @@ class ArticleDownloader:
                         await f.write(text)
                 except OSError as e:
                     logger.error("write_failed", filepath=filepath, error=str(e))
+                    self.failures.append({
+                        "type": "article",
+                        "url": url,
+                        "title": title,
+                        "source": source_name,
+                        "error": f"Write error: {e}",
+                    })
                     await self.feed_repo.record_article_failure(url, f"Write error: {e}")
                     self.failed += 1
                     return
@@ -247,4 +270,11 @@ class ArticleDownloader:
                 tag = source_name[:25]
                 logger.error("download_failed", source=tag, url=url, error=str(e))
                 await self.feed_repo.record_article_failure(url, str(e))
+                self.failures.append({
+                    "type": "article",
+                    "url": url,
+                    "title": title,
+                    "source": source_name,
+                    "error": str(e),
+                })
                 self.failed += 1

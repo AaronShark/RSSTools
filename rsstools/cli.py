@@ -91,6 +91,7 @@ async def cmd_download(cfg: dict, force: bool = False):
                         logger.error("feed_fetch_failed", feed=tag, error=error)
                         console.print(f"  [{tag}] [red]Cannot fetch feed: {error}[/red]")
                         await container.feed_repo.record_failure(url, error or "Cannot fetch")
+                        downloader.record_feed_failure(feed["title"], url, error or "Cannot fetch")
                         return
                     await container.feed_repo.clear_failure(url)
                     if resp_headers.get("etag") or resp_headers.get("last_modified"):
@@ -123,6 +124,7 @@ async def cmd_download(cfg: dict, force: bool = False):
                     logger.error("feed_process_error", feed=tag, error=str(e))
                     console.print(f"  [{tag}] [red]Error: {e}[/red]")
                     await container.feed_repo.record_failure(url, str(e))
+                    downloader.record_feed_failure(feed["title"], url, str(e))
 
         tasks = [process_feed(f, i) for i, f in enumerate(feeds, 1)]
         await asyncio.gather(*tasks)
@@ -143,6 +145,25 @@ async def cmd_download(cfg: dict, force: bool = False):
                 border_style="green",
             )
         )
+
+        if downloader.failures:
+            from collections import defaultdict
+            grouped: dict[str, list[dict]] = defaultdict(list)
+            for f in downloader.failures:
+                grouped[f["error"]].append(f)
+
+            total_failures = len(downloader.failures)
+            console.print()
+            console.print(Panel(f"[red]Failure Summary ({total_failures})[/red]", border_style="red"))
+
+            for error, items in grouped.items():
+                console.print(f"\n[red]• {error}[/red] ({len(items)})")
+                for item in items:
+                    title = item.get("title", item["url"])[:60]
+                    if len(item.get("title", "")) > 60:
+                        title += "..."
+                    console.print(f"  [dim]-[/dim] {title}")
+                    console.print(f"      [dim]{item['url']}[/dim]")
 
     log_path = os.path.join(base_dir, "download.log")
     try:
