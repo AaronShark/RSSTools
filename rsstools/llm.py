@@ -365,6 +365,16 @@ class LLMClient:
             )
 
             batch_results = await self._process_batch(session, prompt, len(batch))
+            
+            for idx, result in enumerate(batch_results):
+                if result.get("error") and idx < len(batch):
+                    individual_result, individual_error = await self.summarize(
+                        session, batch[idx]["title"], batch[idx]["content"]
+                    )
+                    if individual_result:
+                        batch_results[idx] = {"summary": individual_result, "error": None}
+                        logger.debug("batch_fallback_success", index=idx)
+            
             all_results.extend(batch_results)
 
             await asyncio.sleep(self.request_delay)
@@ -404,6 +414,16 @@ class LLMClient:
                     if len(results) == batch_size:
                         return [{"summary": r.get("summary"), "error": None} for r in results]
                 except json.JSONDecodeError:
+                    cleaned = self._extract_json(result)
+                    if cleaned:
+                        try:
+                            data = json.loads(cleaned)
+                            self.cache.put_by_key(cache_key, cleaned)
+                            results = data.get("results", [])
+                            if len(results) == batch_size:
+                                return [{"summary": r.get("summary"), "error": None} for r in results]
+                        except json.JSONDecodeError:
+                            pass
                     logger.warning("batch_json_parse_failed", action="trying_next_model")
 
             if error and error == "Content filtered (400)":
@@ -412,3 +432,14 @@ class LLMClient:
 
         await asyncio.sleep(self.request_delay)
         return [{"summary": None, "error": "Batch processing failed"}] * batch_size
+
+    def _extract_json(self, text: str) -> str | None:
+        """Extract JSON from markdown code blocks or raw text."""
+        import re
+        match = re.search(r"```(?:json)?\s*([\s\S]*?)```", text)
+        if match:
+            return match.group(1).strip()
+        match = re.search(r"\{[\s\S]*\}", text)
+        if match:
+            return match.group(0)
+        return None
