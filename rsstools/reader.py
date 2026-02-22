@@ -15,7 +15,7 @@ from textual.binding import Binding
 from textual.containers import Container, VerticalScroll
 from textual.reactive import reactive
 from textual.screen import ModalScreen
-from textual.widgets import Footer, Header, Input, Label, Static
+from textual.widgets import Button, Footer, Header, Input, Label, Static
 
 from .database import Database
 from .lru_cache import SyncLRUCache
@@ -932,12 +932,20 @@ class CategoryFilterScreen(ModalScreen):
         overflow-y: auto;
     }}
 
-    .category-item {{
-        color: {NORD["snow_storm"]["base"]};
+    .category-btn {{
+        width: 100%;
+        text-align: left;
+        background: transparent;
+        border: none;
         padding: 0 1;
+        color: {NORD["snow_storm"]["base"]};
     }}
 
-    .category-selected {{
+    .category-btn:focus {{
+        border: solid {NORD["frost"]["water"]};
+    }}
+
+    .category-btn.selected {{
         color: {NORD["aurora"]["green"]};
     }}
     """
@@ -964,23 +972,23 @@ class CategoryFilterScreen(ModalScreen):
             Label(f"Current: {current}", classes="modal-current"),
             Container(
                 *[
-                    Label(
+                    Button(
                         f"{'✓' if cat in self.selected else '○'} {cat}",
-                        classes=f"category-item {'category-selected' if cat in self.selected else ''}",
                         id=f"cat-{i}",
+                        classes=f"category-btn {'selected' if cat in self.selected else ''}",
                     )
                     for i, cat in enumerate(categories)
                 ],
                 classes="category-list modal-container",
             ),
-            Label("[Enter=Apply] [A=All] [N=None] [Esc=Cancel]", classes="modal-hint"),
+            Label("[Space=Toggle] [Enter=Apply] [A=All] [N=None] [Esc=Cancel]", classes="modal-hint"),
             classes="modal-container",
         )
 
-    def on_label_clicked(self, event):
-        label_id = event.label.id
-        if label_id and label_id.startswith("cat-"):
-            idx = int(label_id.split("-")[1])
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        button_id = event.button.id
+        if button_id and button_id.startswith("cat-"):
+            idx = int(button_id.split("-")[1])
             cat = self.parent_app.available_categories[idx]
             if cat in self.selected:
                 self.selected.remove(cat)
@@ -994,12 +1002,12 @@ class CategoryFilterScreen(ModalScreen):
         categories = self.parent_app.available_categories
         for i, cat in enumerate(categories):
             is_selected = cat in self.selected
-            label = Label(
+            btn = Button(
                 f"{'✓' if is_selected else '○'} {cat}",
-                classes=f"category-item {'category-selected' if is_selected else ''}",
                 id=f"cat-{i}",
+                classes=f"category-btn {'selected' if is_selected else ''}",
             )
-            list_container.mount(label)
+            list_container.mount(btn)
 
     def action_toggle_all(self):
         self.selected = set(self.parent_app.available_categories)
